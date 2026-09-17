@@ -302,6 +302,13 @@ interface CarcassModel {
   shutters?: Shutter[];
   zk?: string;
   fk?: string;
+  design?: string;
+  handle?: string;
+  drawerModel?: string;
+  inbuiltDrawers?: string;
+  tipOn?: string;
+  appliance1Height?: number;
+  appliance2Height?: number;
   // Wall stone/glass shutter cabinets: glass shelves emitted as a DIRECT raw material
   // (not a stone-panel BOM). Size mirrors the legacy stone shelf; qty derives from height.
   glassShelf?: { name: string; w: number; d: number; t: number; qty: number };
@@ -433,9 +440,12 @@ const VP_PRESETS: Record<string, Array<{ label: string; h: number; w: number }>>
     { label: "MID Full Depth (1287×586)", h: 1287, w: 586 },
   ],
   // Chimney & Dishwasher panels now live in the Visible-Panel section as their own zones.
-  chimney: [
-    { label: "Chimney Area (1082×336)", h: 1082, w: 336 },
-    { label: "Chimney Area (717×336)", h: 717, w: 336 },
+  "chimney-side": [
+    { label: "Wall STD (1082×362)", h: 1082, w: 362 },
+    { label: "Wall STD (717×362)", h: 717, w: 362 },
+  ],
+  "chimney-cover": [
+    { label: "Chimney Cover (800×1000)", h: 800, w: 1000 },
   ],
   dishwasher: [
     { label: "Dishwasher (717×586)", h: 717, w: 586 },
@@ -945,10 +955,10 @@ function validDesigns(zk: string, fk: string, v: any, W?: number, handle?: strin
   if (!v) return SH_DESIGNS.slice();
   const spec = shutSpec(zk, fk, v) as any;
   if (spec.kind === "none") return [];
-  // Glass-shutter families carry only a glass profile: NEON20 (slim, default) or CL1
-  // (classic). CL1 here is a glass shutter (5mm, inset same as stone). All other designs
+  // Glass-shutter families carry only a glass profile: NEON20 (slim, default) or CL2
+  // (classic). CL2 here is a glass shutter (5mm pieces). All other designs
   // are stone and never apply to glass families.
-  if (isGlassShutterFam(fk)) return ["NEON20", "CL1"];
+  if (isGlassShutterFam(fk)) return ["NEON20", "CL2"];
   let ds = SH_DESIGNS.slice();
   if (spec.kind === "drawer") {
     ds = ds.filter((d) => d !== "NEON20");
@@ -1184,7 +1194,9 @@ function buildShutters(
   W: number,
   H: number,
   hand: string,
-  inbuiltDrawers: string = "none"
+  inbuiltDrawers: string = "none",
+  appliance1Height: number = 600,
+  appliance2Height: number = 400
 ): Shutter[] {
   const Z = ZONES[zk];
   if (!design) return [];
@@ -1222,7 +1234,7 @@ function buildShutters(
       const HE = fr.loc === "FH" ? H : fr.hb ? (fk === "APP" ? 320 : 360) : 180;
       const ded = shDeduct(isBase, design, fr.loc);
       const w = W - 3;
-      const h = HE - ded;
+      const h = Math.max(0, HE - ded);
       const pw = w - inset;
       const ph = h - inset;
       
@@ -1253,7 +1265,10 @@ function buildShutters(
       });
     });
     if (spec.upperDoor) {
-      const HE = H >= 2400 ? 1085 : 720;
+      const applianceDelta = fk === "APP" && v.id === "1dw"
+        ? Math.max(0, appliance1Height + appliance2Height - 1000)
+        : 0;
+      const HE = Math.max(0, (H >= 2400 ? 1085 : 720) - applianceDelta);
       const ded = shDeduct(isBase, design, "RH");
       const h = HE - ded;
       const dw = W - 3;
@@ -1275,6 +1290,19 @@ function buildShutters(
       });
     }
   } else {
+    if (fk === "REF" && H === 2400) {
+      const dw = W - 3;
+      const loc = hand === "RHS" ? "R" : "L";
+      [{ pos: "U", h: 547 }, { pos: "B", h: 1847 }].forEach(({ pos, h }) => {
+        out.push({
+          code: `SH-${handleSeg}-${matSeg}-${zp}SH-${W}x${h}-${pos}-${dw}-${h}-${frame}-${shThk}-${design}`,
+          kind: "hinged", design, w: dw, h,
+          pw: dw - inset, ph: h - inset, profV: h, profH: dw,
+          hinge: "", loc,
+        });
+      });
+      return out;
+    }
     if (spec.blindW) {
       const ded = shDeduct(isBase, design, "RH");
       const h = H - ded;
@@ -2442,7 +2470,9 @@ function buildModel(
   drawerModel: string = "Lian",
   inbuiltDrawers: string = "none",
   fixedPanelMat: string = "",
-  tipOn: string = ""
+  tipOn: string = "",
+  appliance1Height: number = 600,
+  appliance2Height: number = 400
 ): CarcassModel {
   const matSuffix = carcassMat === shutterMat || !shutterMat ? carcassMat : `${carcassMat}-${shutterMat}`;
   const m = buildCarcassInner(zk, fk, v, handle, W, H, D, t, matSuffix, hand, drawerModel, inbuiltDrawers, tipOn);
@@ -2453,12 +2483,19 @@ function buildModel(
   m.fixedPanelMat = fixedPanelMat || shutterMat;
   m.carcassProfileColor = carcassProfileColor;
   m.shutterProfileColor = shutterProfileColor;
+  m.design = design;
+  m.handle = handle;
+  m.drawerModel = drawerModel;
+  m.inbuiltDrawers = inbuiltDrawers;
+  m.tipOn = tipOn;
+  m.appliance1Height = appliance1Height;
+  m.appliance2Height = appliance2Height;
   m.mat = carcassMat; // fallback
   // Every cabinet carries 4 cabinet connectors (fitted on site).
   m.hardware.push({ name: "CABINET CONNECTOR 30X10X SS304 CNS-30S EBC", qty: 4, uom: "PCS", pack: "CABINET CONNECTOR 30X10X SS304 CNS-30S EBC" });
   // Every cabinet carries 8 hole cover caps.
   m.hardware.push({ name: "HOLE COVER CAP WHITE 18MM MFC1-WH EBC", qty: 8, uom: "PCS", pack: "HOLE COVER CAP WHITE 18MM MFC1-WH EBC" });
-  m.shutters = buildShutters(zk, fk, v, design, handle, W, H, hand, inbuiltDrawers);
+  m.shutters = buildShutters(zk, fk, v, design, handle, W, H, hand, inbuiltDrawers, appliance1Height, appliance2Height);
   m.shutters.forEach((s) => {
     // The fixed (dummy) panel of a blind cabinet is always a stone 6mm panel, even in a
     // glass-shutter family — so glass treatment is per-shutter, never on the fixed panel.
@@ -2590,17 +2627,14 @@ function buildRawRows(m: CarcassModel) {
     // Fixed (dummy) blind panels are always stone 6mm MD1, even in glass families.
     if (isGlassShutterFam(m.fk) && s.kind !== "fixed") {
       rows.push({ item: `GLASS TOUGH EP ${s.pw}X${s.ph}X5 ${m.shutterMat || "CLEAR"} SKV`, pack: s.code, uom: "Pcs", qty: 1 });
+      cl2BorderPieces(s).forEach((p) => rows.push({ item: `GLASS TOUGH EP ${p.w}X${p.h}X5 ${m.shutterMat || "CLEAR"} SKV ${p.side}`, pack: s.code, uom: "Pcs", qty: p.qty }));
     } else {
       rows.push({ item: `Panels- SH ${s.pw}x${s.ph}x${shThkOf(s.design, false)} ${s.design}`, pack: s.code, uom: "Pcs", qty: 1 });
+      cl2BorderPieces(s).forEach((p) => rows.push({ item: `Panels- SH ${p.w}x${p.h}x${shThkOf(s.design, false)} ${s.design} ${p.side}`, pack: s.code, uom: "Pcs", qty: p.qty }));
     }
-    if (isMD2Family(s.design)) {
-      md2FrameGroups(s, m.fk === "APP").forEach((grp) => grp.lengths.forEach((L) => {
-        rows.push({ item: `${L.name} ${L.len}mm`, pack: s.code, uom: "Pcs", qty: L.qty });
-      }));
-    } else {
-      rows.push({ item: `Profile LH/RH (${s.design}) ${s.profV}mm`, pack: s.code, uom: "Pcs", qty: 2 });
-      rows.push({ item: `Profile TP/BT (${s.design}) ${s.profH}mm`, pack: s.code, uom: "Pcs", qty: 2 });
-    }
+    shutterFrameGroups(s, m.fk === "APP").forEach((grp) => grp.lengths.forEach((L) => {
+      rows.push({ item: `${L.name} ${L.len}mm`, pack: s.code, uom: "Pcs", qty: L.qty });
+    }));
     // Stone corner connector (70X70X2 MAR) is not needed in the shutter packing list; keep others.
     const cornerPk = shutterCornerName(m.fk, s.kind);
     if (!cornerPk.includes("CORNER CONNECTOR FOR STONE")) {
@@ -3093,6 +3127,8 @@ function addHardwareRow(
 //   • Drawers → the MD2 profile is the TOP horizontal; the two verticals + bottom are MD1.
 // Each group is emitted with its own profileCode so it resolves to its own raw profile.
 const isMD2Family = (design: string): boolean => /^MD2/i.test(design || "");
+const baseShutterDesign = (design: string): string => String(design || "").replace(/CM[12]$/i, "");
+const cmShutterDesign = (design: string): string | null => design.match(/(CM[12])$/i)?.[1].toUpperCase() || null;
 
 function md2FrameGroups(s: Shutter, applianceBottom: boolean = false): Array<{ design: string; lengths: Array<{ len: number; qty: number; name: string }> }> {
   if (s.kind === "drawer") {
@@ -3123,6 +3159,30 @@ function md2FrameGroups(s: Shutter, applianceBottom: boolean = false): Array<{ d
       { len: s.profV, qty: 1, name: `Profile ${md1Side} (MD1)` },
       { len: s.profH, qty: 2, name: `Profile TP/BT (MD1)` },
     ] },
+  ];
+}
+
+function shutterFrameGroups(s: Shutter, applianceBottom: boolean = false): Array<{ design: string; lengths: Array<{ len: number; qty: number; name: string }> }> {
+  const base = baseShutterDesign(s.design);
+  const groups = isMD2Family(base)
+    ? md2FrameGroups(s, applianceBottom)
+    : [{ design: base, lengths: [
+        { len: s.profV, qty: 2, name: `Profile LH/RH (${base})` },
+        { len: s.profH, qty: 2, name: `Profile TP/BT (${base})` },
+      ] }];
+  const cm = cmShutterDesign(s.design);
+  if (cm) groups.push({ design: cm, lengths: [
+    { len: Math.max(0, s.profV - 100), qty: 2, name: `Profile LH/RH (${cm})` },
+    { len: Math.max(0, s.profH - 100), qty: 2, name: `Profile TP/BT (${cm})` },
+  ] });
+  return groups;
+}
+
+function cl2BorderPieces(s: Shutter): Array<{ side: string; w: number; h: number; qty: number }> {
+  if (baseShutterDesign(s.design) !== "CL2") return [];
+  return [
+    { side: "LH/RH", w: 44, h: Math.max(0, s.h - 7), qty: 2 },
+    { side: "TP/BT", w: Math.max(0, s.w - 7), h: 44, qty: 2 },
   ];
 }
 
@@ -4119,16 +4179,30 @@ function buildFullBomData(
           rows, selectedRawIds, rawOptionsMap);
       }
 
+      // CL2 carries four additional 44mm border pieces beneath the profile: one LH/RH set
+      // and one TP/BT set. Glass shutters use glass for all five pieces; stone shutters use stone.
+      cl2BorderPieces(s).forEach((piece) => {
+        if (isGlassShutter) {
+          const glassItemName = `GLASS TOUGH EP ${piece.w}X${piece.h}X5 ${glassColor} SKV ${piece.side}`;
+          rows.push(makeRow(so, "Shutter", "Raw Material", 3,
+            glassItemName, glassItemName + skuSuffix, "plain",
+            String(piece.h), String(piece.w), "", "5", glassColor, partsShName,
+            piece.qty, 0, +(piece.qty * q).toFixed(3), "pcs", stockMap, "plain"));
+        } else {
+          const borderName = `Panels- SH ${piece.w}x${piece.h}x${shStoneThk} ${s.design} ${piece.side}`;
+          addPanelRow(so, "Shutter", "Panels- SH", 3,
+            borderName, borderName + skuSuffix, "component",
+            String(piece.h), String(piece.w), "", shStoneThk, shFinish, partsShName,
+            piece.qty, 0, +(piece.qty * q).toFixed(3), "pcs", stockMap, "component",
+            rows, selectedRawIds, rawOptionsMap);
+        }
+      });
+
       // Level 3+: Shutter Profiles — buildProfileBomRows emits its "Set of Profile"
       // at level 2; shift every row down by 1 so the sets sit at level 3 under Parts- SH.
       // MD2-family shutters split the frame: one edge = MD2 (HM-527), three = MD1 (HM-517). Every
       // other design keeps the uniform LH/RH + TP/BT frame in its own profile.
-      const frameGroups = isMD2Family(s.design)
-        ? md2FrameGroups(s, m.fk === "APP")
-        : [{ design: s.design, lengths: [
-            { len: s.profV, qty: 2, name: `Profile LH/RH (${s.design})` },
-            { len: s.profH, qty: 2, name: `Profile TP/BT (${s.design})` },
-          ] }];
+      const frameGroups = shutterFrameGroups(s, m.fk === "APP");
       frameGroups.forEach((grp) => {
         const shutterProfileRows = buildProfileBomRows(
           so, grp.design, shProfFinish, grp.lengths,
@@ -4301,14 +4375,14 @@ function buildFullBomData(
     rows.push(...mainProfileRows);
 
     if (vp.profile.includes("CM")) {
-      const mouldProfile = "CM1";
+      const mouldProfile = vp.profile.includes("CM2") ? "CM2" : "CM1";
       const mouldProfileRows = buildProfileBomRows(
         so,
         mouldProfile,
         profFinish,
         [
-          { len: H, qty: 2, name: `Profile LH/RH (${mouldProfile})` },
-          { len: W, qty: 2, name: `Profile TP/BT (${mouldProfile})` }
+          { len: Math.max(0, H - 100), qty: 2, name: `Profile LH/RH (${mouldProfile})` },
+          { len: Math.max(0, W - 100), qty: 2, name: `Profile TP/BT (${mouldProfile})` }
         ],
         skuSuffix,
         stockMap,
@@ -6977,6 +7051,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const [tipOn, setTipOn] = useState<string>(TIPON_OPTIONS[0]);
   const [inbuiltDrawers, setInbuiltDrawers] = useState<string>("none");
   const [elevation, setElevation] = useState<string>("");
+  const [appliance1Height, setAppliance1Height] = useState<number>(600);
+  const [appliance2Height, setAppliance2Height] = useState<number>(400);
+  const [editingLineIndex, setEditingLineIndex] = useState<number | null>(null);
 
   const [wSel, setWSel] = useState<string>("600");
   const [hSel, setHSel] = useState<string>("720");
@@ -7415,7 +7492,12 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       const bsOut: BacksplashRow[] = [];
       const ctOut: CountertopRow[] = [];
       let skipped = 0, fid = 1, vid = 1, bid = 1, cid = 1;
-      const zoneOf = (z: string) => z.toLowerCase();
+      const zoneOf = (z: string) => {
+        const zone = z.toLowerCase();
+        // Older exports used a single CHIMNEY zone. Import them as the manual
+        // cover panel now that chimney side and cover panels are separate.
+        return zone === "chimney" ? "chimney-cover" : zone;
+      };
 
       for (const r of rows) {
         if (!lvl0(r)) continue;
@@ -7431,7 +7513,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         }
         let mm = sku.match(/^SH-Filler-([A-Z]+)-(\d+)x(\d+)/);
         if (mm) { fillersOut.push({ id: fid++, zone: zoneOf(mm[1]), customShade: S(r["Finish"]), qty: N(r["SO Qty"]), customHeight: mm[2], customWidth: mm[3], elevation: S(r["Elevation"]) }); continue; }
-        mm = sku.match(/^SH-Visible-([A-Z]+)-(\d+)x(\d+)/);
+        mm = sku.match(/^SH-Visible-([A-Z-]+)-(\d+)x(\d+)/);
         if (mm) { vpOut.push({ id: vid++, zone: zoneOf(mm[1]), customShade: S(r["Finish"]), qty: N(r["SO Qty"]), customHeight: mm[2], customWidth: mm[3], elevation: S(r["Elevation"]), profile: "MD1" }); continue; }
         if (grp === "Backsplash") { mm = sku.match(/^BS-(\d+)x(\d+)x(\d+)/); if (mm) bsOut.push({ id: bid++, width: mm[1], height: mm[2], thickness: mm[3], color: S(r["Finish"]), qty: N(r["SO Qty"]), elevation: S(r["Elevation"]) }); continue; }
       }
@@ -8113,6 +8195,23 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             }
             shutterParts.push({ item_id: shPanelId, quantity: 1 });
 
+            for (const piece of cl2BorderPieces(s)) {
+              let borderId: string;
+              if (isGlassShutterFam(currentModel.fk) && s.kind !== "fixed") {
+                const glassItemName = `GLASS TOUGH EP ${piece.w}X${piece.h}X5 ${glassColorOfModel} SKV ${piece.side}`;
+                borderId = await resolveSimpleItem(glassItemName, false, { group: "Glass", finish: glassColorOfModel }, "Pcs");
+              } else {
+                const borderBase = `Panel Shutter ${piece.w}x${piece.h}x${sThk} ${sFin} ${piece.side}`;
+                const borderArea = sqft(piece.w, piece.h);
+                const borderQty = shutterSlabArea > 0 ? borderArea * (1 + STONE_WASTE) / shutterSlabArea : borderArea * (1 + STONE_WASTE);
+                borderId = await resolveCompositeItem(borderBase, borderBase, [
+                  { item_id: shutterStoneId, quantity: Math.round(borderQty * 10000) / 10000 },
+                  { item_id: cuttingServiceId, quantity: 1 },
+                ], { ...shPanelCf, height: String(piece.h), width: String(piece.w) });
+              }
+              shutterParts.push({ item_id: borderId, quantity: piece.qty });
+            }
+
             // 2. Set of Shutter Profiles (Level 2). MD2-family shutters split the frame into an MD2
             // (HM-527) edge + MD1 (HM-517) edges; every other design keeps a single uniform frame.
             const sFinish = currentModel.shutterProfileColor || shutterProfileColor || "CHAMPAGNE";
@@ -8127,13 +8226,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               }
               return rawId;
             };
-            const shutterFrameGroups = isMD2Family(shDesign)
-              ? md2FrameGroups(s, currentModel.fk === "APP")
-              : [{ design: shDesign, lengths: [
-                  { len: s.profV, qty: 2, name: `Profile LH/RH (${shDesign})` },
-                  { len: s.profH, qty: 2, name: `Profile TP/BT (${shDesign})` },
-                ] }];
-            for (const grp of shutterFrameGroups) {
+            const profileGroups = shutterFrameGroups(s, currentModel.fk === "APP");
+            for (const grp of profileGroups) {
               const rawId = await resolveRawProfile(grp.design);
               const setIds = await resolveProfileBOM(
                 grp.design, sFinish, grp.lengths, rawId, cuttingServiceId, drillingServiceId,
@@ -8605,9 +8699,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }, [currentVariant, finalW, standardSizes]);
 
   // Get valid shutter designs. Glass-shutter families can only carry a glass profile:
-  // NEON20 (slim, the default/locked choice) or CL1 (classic). When the design lock is
-  // released the user may switch between these two; CL1 in a glass family is treated as a
-  // glass shutter (5mm glass, inset same as stone). CL1 also remains in the stone-family
+  // NEON20 (slim, the default/locked choice) or CL2 (classic). When the design lock is
+  // released the user may switch between these two; CL2 in a glass family is treated as a
+  // glass shutter (five 5mm glass pieces). CL2 also remains in the stone-family
   // dropdown below, where it is treated as a 6mm stone shutter with stone shades.
   const designsList = useMemo(() => {
     return validDesigns(zone, activeFamilyKey, currentVariant, finalW);
@@ -8664,8 +8758,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     // selector then represents the fixed-panel stone shade (blind glass only).
     const effShutterMat = isGlassShutterSelected ? glassColor : shutterMat;
     const effFixedPanelMat = isBlindGlassSelected ? shutterMat : "";
-    return buildModel(zone, activeFamilyKey, currentVariant, handle, design, carcassMat, effShutterMat, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, effFixedPanelMat, ZONES[zone]?.kind === "loft" ? tipOn : "");
-  }, [zone, activeFamilyKey, currentVariant, handle, design, carcassMat, shutterMat, glassColor, isGlassShutterSelected, isBlindGlassSelected, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, tipOn]);
+    return buildModel(zone, activeFamilyKey, currentVariant, handle, design, carcassMat, effShutterMat, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, effFixedPanelMat, ZONES[zone]?.kind === "loft" ? tipOn : "", appliance1Height, appliance2Height);
+  }, [zone, activeFamilyKey, currentVariant, handle, design, carcassMat, shutterMat, glassColor, isGlassShutterSelected, isBlindGlassSelected, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, tipOn, appliance1Height, appliance2Height]);
 
   useEffect(() => {
     (window as any).__BOM_CONTEXT__ = {
@@ -8878,7 +8972,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               netSqft: 0,
             };
           }
-          stones[sKey].netSqft += sqft(s.pw, s.ph) * qty;
+          const cl2ExtraSqft = cl2BorderPieces(s).reduce((sum, p) => sum + sqft(p.w, p.h) * p.qty, 0);
+          stones[sKey].netSqft += (sqft(s.pw, s.ph) + cl2ExtraSqft) * qty;
         });
       }
 
@@ -8912,12 +9007,12 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         };
         m.shutters.forEach((s) => {
           const sDesign = s.design || design || "MD1";
-          if (isMD2Family(sDesign)) {
+          if (isMD2Family(sDesign) || cmShutterDesign(sDesign)) {
             // MD2 frame uses TWO profiles: MD2 (HM-527) on one edge, MD1 (HM-517) on the other three.
             // Emit a separate picker per profile, with the split edge lengths. The HM-527 picker is
             // also filtered to the T-type(s) valid for this shutter's width/opening.
             const appBottom = m.fk === "APP";
-            md2FrameGroups(s, appBottom).forEach((grp) => {
+            shutterFrameGroups(s, appBottom).forEach((grp) => {
               const lenMm = grp.lengths.reduce((sum, L) => sum + L.len * L.qty, 0);
               if (grp.design === "MD2") {
                 // Key stays `shutter|MD2|finish` (matches the Full-BOM + Zoho raw lookup); the valid
@@ -8934,7 +9029,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               }
             });
           } else {
-            addProfile(sDesign, 2 * s.profV + 2 * s.profH);
+            shutterFrameGroups(s, m.fk === "APP").forEach((grp) =>
+              addProfile(grp.design, grp.lengths.reduce((sum, L) => sum + L.len * L.qty, 0))
+            );
           }
         });
       }
@@ -9040,11 +9137,12 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       profiles[pKey].lenMeters += ((2 * H + 2 * W) / 1000) * q;
 
       if (vp.profile.includes("CM")) {
-        const cmKey = `shutter|CM1|${pFinish}`;
+        const cmCode = vp.profile.includes("CM2") ? "CM2" : "CM1";
+        const cmKey = `shutter|${cmCode}|${pFinish}`;
         if (!profiles[cmKey]) {
-          profiles[cmKey] = { key: cmKey, category: "shutter", profileCode: "CM1", finish: pFinish, lenMeters: 0 };
+          profiles[cmKey] = { key: cmKey, category: "shutter", profileCode: cmCode, finish: pFinish, lenMeters: 0 };
         }
-        profiles[cmKey].lenMeters += ((2 * H + 2 * W) / 1000) * q;
+        profiles[cmKey].lenMeters += ((2 * Math.max(0, H - 100) + 2 * Math.max(0, W - 100)) / 1000) * q;
       }
     });
 
@@ -9309,6 +9407,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }, [rawAggregation.stones, rawAggregation.profiles, rawAggregation.hardware]);
 
   function getDefaultShutterShadeForZone(zoneKey: string) {
+    if (zoneKey === "chimney-side") zoneKey = "wall";
+    if (zoneKey === "chimney-cover") return shutterMat;
     const matchingLines = project.filter((line) => {
       const zk = line.m.zk || "";
       if (zoneKey === "base") return ["BC", "BCL", "BB", "BBL"].includes(zk);
@@ -9325,6 +9425,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }
 
   function getDefaultShutterHeightForZone(zoneKey: string) {
+    if (zoneKey === "chimney-cover") return 800;
+    if (zoneKey === "chimney-side") zoneKey = "wall";
     const matchingLines = project.filter((line) => {
       const zk = line.m.zk || "";
       if (zoneKey === "base") return ["BC", "BCL", "BB", "BBL"].includes(zk);
@@ -9351,6 +9453,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }
 
   function getDefaultCabinetDepthForZone(zoneKey: string) {
+    if (zoneKey === "chimney-cover") return 975; // +25 visible-panel allowance = 1000mm
+    if (zoneKey === "chimney-side") zoneKey = "wall";
     const matchingLines = project.filter((line) => {
       const zk = line.m.zk || "";
       if (zoneKey === "base") return ["BC", "BCL", "BB", "BBL"].includes(zk);
@@ -9368,6 +9472,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }
 
   function getShutterProfileForZone(zoneKey: string) {
+    if (zoneKey === "chimney-side") zoneKey = "wall";
     const matchingLines = project.filter((line) => {
       const zk = line.m.zk || "";
       if (zoneKey === "base") return ["BC", "BCL", "BB", "BBL"].includes(zk);
@@ -9388,6 +9493,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }
 
   function getProfileColorForZone(zoneKey: string) {
+    if (zoneKey === "chimney-side") zoneKey = "wall";
     const matchingLines = project.filter((line) => {
       const zk = line.m.zk || "";
       if (zoneKey === "base") return ["BC", "BCL", "BB", "BBL"].includes(zk);
@@ -9443,7 +9549,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       });
       (m.shutters || []).forEach((s) => {
         shSqft += sqft(s.pw, s.ph) * q;
-        shProf += ((2 * s.profV + 2 * s.profH) / 1000) * q;
+        cl2BorderPieces(s).forEach((piece) => {
+          shSqft += sqft(piece.w, piece.h) * piece.qty * q;
+        });
+        shutterFrameGroups(s, m.fk === "APP").forEach((group) => {
+          group.lengths.forEach((piece) => {
+            shProf += (piece.len * piece.qty / 1000) * q;
+          });
+        });
         shCorner += q;
         hardAgg[s.hinge] = (hardAgg[s.hinge] || 0) + (s.hq || 1) * q;
       });
@@ -9504,8 +9617,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       const fSqft = sqft(pw, ph) * q;
       
       const mainProfile = vp.profile.includes("MD3") ? "MD3" : "MD1";
-      const multiplier = vp.profile.includes("CM") ? 2 : 1;
-      const fProf = ((2 * H + 2 * W) / 1000) * q * multiplier;
+      const mainProfMm = 2 * H + 2 * W;
+      const cmProfMm = vp.profile.includes("CM") ? 2 * Math.max(0, H - 100) + 2 * Math.max(0, W - 100) : 0;
+      const fProf = ((mainProfMm + cmProfMm) / 1000) * q;
       
       shSqft += fSqft;
       shProf += fProf;
@@ -9517,7 +9631,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
       profAgg[mainProfile] = (profAgg[mainProfile] || 0) + ((2 * H + 2 * W) / 1000) * q;
       if (vp.profile.includes("CM")) {
-        profAgg["CM1"] = (profAgg["CM1"] || 0) + ((2 * H + 2 * W) / 1000) * q;
+        const cmCode = vp.profile.includes("CM2") ? "CM2" : "CM1";
+        profAgg[cmCode] = (profAgg[cmCode] || 0) + ((2 * Math.max(0, H - 100) + 2 * Math.max(0, W - 100)) / 1000) * q;
       }
     });
 
@@ -9554,7 +9669,29 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       return;
     }
     const q = Math.max(1, lineQty);
-    setProject((curr) => [...curr, { qty: q, m: model, rate: soRate, elevation }]);
+    if (editingLineIndex !== null) {
+      setProject((curr) => curr.map((line, idx) => idx === editingLineIndex ? { ...line, qty: q, m: model, rate: soRate, elevation } : line));
+      setEditingLineIndex(null);
+    } else {
+      setProject((curr) => [...curr, { qty: q, m: model, rate: soRate, elevation }]);
+    }
+  };
+
+  const editLine = (idx: number) => {
+    const line = project[idx];
+    if (!line) return;
+    const m = line.m;
+    setZone(m.zk || "BC"); setFamily(m.fk || "DW"); setVariantId(m.v?.id || "");
+    setHanded(m.shutters?.[0]?.loc === "R" ? "RHS" : "LHS");
+    setHandle(m.handle || (m.isCJ ? "XCJ" : "STD")); setDesign(m.design || m.shutters?.[0]?.design || "MD1");
+    setCarcassMat(m.carcassMat || m.mat); setShutterMat(m.shutterMat || m.mat);
+    if (isGlassShutterFam(m.fk)) setGlassColor(m.shutterMat || "CLEAR");
+    setCarcassProfileColor(m.carcassProfileColor || "CHAMPAGNE"); setShutterProfileColor(m.shutterProfileColor || "CHAMPAGNE");
+    setDrawerModel(m.drawerModel || "Lian"); setInbuiltDrawers(m.inbuiltDrawers || "none"); setTipOn(m.tipOn || TIPON_OPTIONS[0]);
+    setWSel("custom"); setHSel("custom"); setDSel("custom"); setCustomW(m.W); setCustomH(m.H); setCustomD(m.D); setThickness(m.t);
+    setAppliance1Height(m.appliance1Height || 600); setAppliance2Height(m.appliance2Height || 400);
+    setLineQty(line.qty); setSoRate(line.rate || 0); setElevation(line.elevation || ""); setEditingLineIndex(idx);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   // ---- Other Accessories helpers ----
@@ -10320,6 +10457,20 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               </>
             )}
 
+            {activeFamilyKey === "APP" && currentVariant?.id === "1dw" && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+                <label>Appliance 1 Height (mm)
+                  <input type="number" min={600} value={appliance1Height} onChange={(e) => setAppliance1Height(Math.max(600, parseInt(e.target.value) || 600))} />
+                </label>
+                <label>Appliance 2 Height (mm)
+                  <input type="number" min={400} value={appliance2Height} onChange={(e) => setAppliance2Height(Math.max(400, parseInt(e.target.value) || 400))} />
+                </label>
+                <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--accent2)" }}>
+                  Total: {appliance1Height + appliance2Height} mm (minimum 1000 mm). Increases reduce only the upper shutter height.
+                </div>
+              </div>
+            )}
+
             {currentVariant?.handed && !(activeFamilyKey === "BPO" && finalW > 150) && (
               <div id="handedWrap">
                 <label>Hand <span className="hint">active side</span></label>
@@ -10614,9 +10765,10 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               title="Qty"
               onChange={(e) => setLineQty(Math.max(1, parseInt(e.target.value) || 1))}
             />
-            <button className="addbtn" onClick={addLine} disabled={!elevation} title={!elevation ? "Select an Elevation first" : "Add to Project"}>
-              + Add to Project
+            <button className="addbtn" onClick={addLine} disabled={!elevation} title={!elevation ? "Select an Elevation first" : editingLineIndex !== null ? "Update project line" : "Add to Project"}>
+              {editingLineIndex !== null ? "Update Project Line" : "+ Add to Project"}
             </button>
+            {editingLineIndex !== null && <button className="clr" onClick={() => setEditingLineIndex(null)}>Cancel edit</button>}
           </div>
 
           <div className="meta" style={soMode ? { display: "none" } : undefined}>
@@ -11176,6 +11328,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               {((l.rate || 0) * l.qty).toLocaleString("en-IN")}
                             </td>
                             <td style={{ textAlign: "right" }}>
+                              <button className="clr" onClick={() => editLine(i)} style={{ marginRight: 6 }}>edit</button>
                               <button className="rm" onClick={() => removeLine(i)}>remove</button>
                             </td>
                           </tr>
@@ -11393,11 +11546,19 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                             <td style={{ padding: "8px" }}>
                               <select
                                 value={item.zone}
-                                onChange={(e) => updateVisiblePanel(item.id, { zone: e.target.value })}
+                                onChange={(e) => {
+                                  const nextZone = e.target.value;
+                                  updateVisiblePanel(item.id, {
+                                    zone: nextZone,
+                                    profile: getShutterProfileForZone(nextZone),
+                                    customHeight: nextZone === "chimney-cover" ? "800" : "",
+                                    customWidth: nextZone === "chimney-cover" ? "1000" : "",
+                                  });
+                                }}
                                 style={{ width: "120px", padding: "4px 6px", border: "1px solid var(--line)", borderRadius: "3px", fontSize: "11px", background: "#fff" }}
                               >
-                                {["base", "tall", "wall", "loft", "mid", "chimney", "dishwasher"].map((z) => (
-                                  <option key={z} value={z}>{z.charAt(0).toUpperCase() + z.slice(1)}</option>
+                                {["base", "tall", "wall", "loft", "mid", "chimney-side", "chimney-cover", "dishwasher"].map((z) => (
+                                  <option key={z} value={z}>{z === "chimney-side" ? "Chimney Side Panel" : z === "chimney-cover" ? "Chimney Cover Panel" : z.charAt(0).toUpperCase() + z.slice(1)}</option>
                                 ))}
                               </select>
                             </td>
@@ -11418,8 +11579,10 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               >
                                 <option value="MD1">MD1 (Default)</option>
                                 <option value="MD3">MD3</option>
-                                <option value="MD1 + CM1/2">MD1 + CM1/2</option>
-                                <option value="MD3 + CM1/3">MD3 + CM1/3</option>
+                                <option value="MD1 + CM1">MD1 + CM1</option>
+                                <option value="MD1 + CM2">MD1 + CM2</option>
+                                <option value="MD3 + CM1">MD3 + CM1</option>
+                                <option value="MD3 + CM2">MD3 + CM2</option>
                               </select>
                             </td>
                             <td style={{ padding: "8px" }}>
