@@ -128,23 +128,33 @@ export async function POST(request: Request) {
     const key = process.env.OPENAI_API_KEY;
     if (!key) return NextResponse.json({ error: "OPENAI_API_KEY is not configured on the server." }, { status: 503 });
 
-    const form = await request.formData();
-    const file = form.get("file");
-    if (!(file instanceof File)) return NextResponse.json({ error: "Choose a PDF file." }, { status: 400 });
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      return NextResponse.json({ error: "Only PDF production drawings are supported." }, { status: 400 });
-    }
-    if (file.size > 50 * 1024 * 1024) return NextResponse.json({ error: "PDF must be smaller than 50 MB." }, { status: 400 });
-
+    const isJson = (request.headers.get("content-type") || "").includes("application/json");
+    let fileId = "";
+    let filename = "production-drawing.pdf";
+    let fileData = "";
     let catalog: CatalogChoice[] = [];
-    try {
-      catalog = JSON.parse(String(form.get("catalog") || "[]"));
-      if (!Array.isArray(catalog)) catalog = [];
-    } catch { catalog = []; }
+    if (isJson) {
+      const body = await request.json();
+      fileId = String(body?.fileId || "");
+      catalog = Array.isArray(body?.catalog) ? body.catalog : [];
+      if (!/^file[-_][A-Za-z0-9_-]+$/.test(fileId)) return NextResponse.json({ error: "Invalid uploaded PDF file id." }, { status: 400 });
+    } else {
+      const form = await request.formData();
+      const file = form.get("file");
+      if (!(file instanceof File)) return NextResponse.json({ error: "Choose a PDF file." }, { status: 400 });
+      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+        return NextResponse.json({ error: "Only PDF production drawings are supported." }, { status: 400 });
+      }
+      if (file.size > 50 * 1024 * 1024) return NextResponse.json({ error: "PDF must be smaller than 50 MB." }, { status: 400 });
+      filename = file.name;
+      const bytes = Buffer.from(await file.arrayBuffer());
+      fileData = `data:application/pdf;base64,${bytes.toString("base64")}`;
+      try {
+        catalog = JSON.parse(String(form.get("catalog") || "[]"));
+        if (!Array.isArray(catalog)) catalog = [];
+      } catch { catalog = []; }
+    }
     if (!catalog.length) return NextResponse.json({ error: "Cabinet catalogue was not supplied." }, { status: 400 });
-
-    const bytes = Buffer.from(await file.arrayBuffer());
-    const fileData = `data:application/pdf;base64,${bytes.toString("base64")}`;
     const allowed = catalog.map((c) => `${c.zoneKey}|${c.familyKey}|${c.variantId}: ${c.zoneLabel} / ${c.familyLabel} / ${c.variantLabel}`).join("\n");
     const prompt = `You extract a kitchen production drawing into a cabinet BOM draft. The PDF may be scanned and contain plans, specifications and elevations.
 
@@ -171,13 +181,22 @@ ${allowed}`;
       body: JSON.stringify({
         model: process.env.OPENAI_PDF_MODEL || "gpt-4.1",
         input: [{ role: "user", content: [
-          { type: "input_file", filename: file.name, file_data: fileData },
+          fileId
+            ? { type: "input_file", file_id: fileId }
+            : { type: "input_file", filename, file_data: fileData },
           { type: "input_text", text: prompt },
         ] }],
         text: { format: { type: "json_schema", name: "kitchen_drawing_extraction", strict: true, schema: extractionSchema } },
       }),
     });
     const payload = await apiResponse.json();
+    if (fileId) {
+      // Uploaded production drawings are temporary inputs, not a document store.
+      await fetch(`https://api.openai.com/v1/files/${encodeURIComponent(fileId)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${key}` },
+      }).catch(() => undefined);
+    }
     if (!apiResponse.ok) {
       if (apiResponse.status === 401) {
         return NextResponse.json({ error: "PDF extraction is not configured: the server's OpenAI API key is invalid or expired." }, { status: 503 });

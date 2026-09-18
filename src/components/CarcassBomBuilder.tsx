@@ -7508,14 +7508,49 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     try {
       setPlanningPdfLoading(true);
       setPlanningPdfResult(null);
-      setPlanningPdfMsg("Reading every page and matching cabinets to the builder catalogue…");
+      setPlanningPdfMsg("Uploading production drawing…");
 
       // Only distinct cabinet configurations are sent. Dimensions remain those printed in the
       // drawing and are applied to buildModel below, so custom-size cabinets are supported.
-      const body = new FormData();
-      body.append("file", file);
-      body.append("catalog", JSON.stringify(planningPdfCatalog));
-      const response = await fetch("/api/planning/pdf", { method: "POST", body });
+      let response: Response;
+      // Vercel request bodies are capped at roughly 4.5 MB. Large drawings are relayed to
+      // OpenAI in 3 MB pieces, then referenced by file id for the extraction request.
+      if (file.size > 3 * 1024 * 1024) {
+        const jsonPost = async (url: string, data: any) => {
+          const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+          const payload = await res.json();
+          if (!res.ok) throw new Error(payload?.error || "PDF upload failed.");
+          return payload;
+        };
+        const init = await jsonPost("/api/planning/pdf/upload?action=init", { filename: file.name, bytes: file.size });
+        const partIds: string[] = [];
+        const chunkSize = 3 * 1024 * 1024;
+        const partCount = Math.ceil(file.size / chunkSize);
+        for (let offset = 0, part = 1; offset < file.size; offset += chunkSize, part++) {
+          setPlanningPdfMsg(`Uploading production drawing · part ${part} of ${partCount}…`);
+          const partResponse = await fetch(`/api/planning/pdf/upload?action=part&uploadId=${encodeURIComponent(init.uploadId)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: file.slice(offset, Math.min(offset + chunkSize, file.size)),
+          });
+          const partPayload = await partResponse.json();
+          if (!partResponse.ok) throw new Error(partPayload?.error || "A PDF upload part failed.");
+          partIds.push(partPayload.partId);
+        }
+        const completed = await jsonPost(`/api/planning/pdf/upload?action=complete&uploadId=${encodeURIComponent(init.uploadId)}`, { partIds });
+        setPlanningPdfMsg("Reading every page and matching cabinets to the builder catalogue…");
+        response = await fetch("/api/planning/pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileId: completed.fileId, catalog: planningPdfCatalog }),
+        });
+      } else {
+        const body = new FormData();
+        body.append("file", file);
+        body.append("catalog", JSON.stringify(planningPdfCatalog));
+        setPlanningPdfMsg("Reading every page and matching cabinets to the builder catalogue…");
+        response = await fetch("/api/planning/pdf", { method: "POST", body });
+      }
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || "Could not extract this drawing.");
       const result = payload.result as PlanningPdfResult;
