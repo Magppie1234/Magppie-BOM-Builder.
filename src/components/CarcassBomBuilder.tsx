@@ -7558,7 +7558,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       const reviewCount = (result.cabinets || []).filter((c) => c.confidence < 0.85 || c.warnings.length > 0 || !c.width || !c.height || !c.depth).length;
       setPlanningPdfMsg(`Found ${result.cabinets.length} cabinet row(s)${reviewCount ? ` · ${reviewCount} need review` : " · all high confidence"}. Check the draft, then append it.`);
     } catch (err: any) {
-      setPlanningPdfMsg(`Could not read the PDF: ${err?.message || "unknown error"}`);
+      const rawMessage = String(err?.message || "unknown error");
+      const message = /server had an error|request id|temporarily (busy|unavailable)|failed after retries/i.test(rawMessage)
+        ? "The drawing service is temporarily busy. Please wait a moment and try the PDF again."
+        : rawMessage;
+      setPlanningPdfMsg(`Could not read the PDF: ${message}`);
     } finally {
       setPlanningPdfLoading(false);
     }

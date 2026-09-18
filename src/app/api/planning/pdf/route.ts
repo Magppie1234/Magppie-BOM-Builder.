@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fetchOpenAiWithRetry, temporaryOpenAiError } from "@/lib/openaiRetry";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -175,20 +176,22 @@ Rules:
 Allowed cabinet catalogue:
 ${allowed}`;
 
-    const apiResponse = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: process.env.OPENAI_PDF_MODEL || "gpt-4.1",
-        input: [{ role: "user", content: [
-          fileId
-            ? { type: "input_file", file_id: fileId }
-            : { type: "input_file", filename, file_data: fileData },
-          { type: "input_text", text: prompt },
-        ] }],
-        text: { format: { type: "json_schema", name: "kitchen_drawing_extraction", strict: true, schema: extractionSchema } },
-      }),
+    const responseBody = JSON.stringify({
+      model: process.env.OPENAI_PDF_MODEL || "gpt-4.1",
+      input: [{ role: "user", content: [
+        fileId
+          ? { type: "input_file", file_id: fileId }
+          : { type: "input_file", filename, file_data: fileData },
+        { type: "input_text", text: prompt },
+      ] }],
+      text: { format: { type: "json_schema", name: "kitchen_drawing_extraction", strict: true, schema: extractionSchema } },
     });
+    const idempotencyKey = crypto.randomUUID();
+    const apiResponse = await fetchOpenAiWithRetry("https://api.openai.com/v1/responses", () => ({
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+      body: responseBody,
+    }));
     const payload = await apiResponse.json();
     if (fileId) {
       // Uploaded production drawings are temporary inputs, not a document store.
@@ -201,7 +204,7 @@ ${allowed}`;
       if (apiResponse.status === 401) {
         return NextResponse.json({ error: "PDF extraction is not configured: the server's OpenAI API key is invalid or expired." }, { status: 503 });
       }
-      const message = payload?.error?.message || "The drawing extraction service failed.";
+      const message = temporaryOpenAiError(apiResponse.status) || payload?.error?.message || "The drawing extraction service failed.";
       return NextResponse.json({ error: message }, { status: apiResponse.status });
     }
     const raw = responseText(payload);

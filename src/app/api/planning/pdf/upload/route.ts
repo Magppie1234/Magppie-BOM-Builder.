@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { fetchOpenAiWithRetry, temporaryOpenAiError } from "@/lib/openaiRetry";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -12,7 +13,8 @@ async function openAiJson(response: Response) {
   const payload = await response.json();
   if (!response.ok) {
     if (response.status === 401) return { errorResponse: authError() };
-    return { errorResponse: NextResponse.json({ error: payload?.error?.message || "OpenAI file upload failed." }, { status: response.status }) };
+    const message = temporaryOpenAiError(response.status) || payload?.error?.message || "OpenAI file upload failed.";
+    return { errorResponse: NextResponse.json({ error: message }, { status: response.status }) };
   }
   return { payload };
 }
@@ -24,6 +26,7 @@ export async function POST(request: Request) {
     const url = new URL(request.url);
     const action = url.searchParams.get("action");
     const headers = { Authorization: `Bearer ${key}` };
+    const idempotencyKey = crypto.randomUUID();
 
     if (action === "init") {
       const body = await request.json();
@@ -32,11 +35,12 @@ export async function POST(request: Request) {
       if (!Number.isFinite(bytes) || bytes < 1 || bytes > 50 * 1024 * 1024) {
         return NextResponse.json({ error: "PDF must be between 1 byte and 50 MB." }, { status: 400 });
       }
-      const response = await fetch("https://api.openai.com/v1/uploads", {
+      const uploadBody = JSON.stringify({ bytes, filename, mime_type: "application/pdf", purpose: "user_data" });
+      const response = await fetchOpenAiWithRetry("https://api.openai.com/v1/uploads", () => ({
         method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ bytes, filename, mime_type: "application/pdf", purpose: "user_data" }),
-      });
+        headers: { ...headers, "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: uploadBody,
+      }));
       const result = await openAiJson(response);
       if (result.errorResponse) return result.errorResponse;
       return NextResponse.json({ uploadId: result.payload.id });
@@ -50,9 +54,11 @@ export async function POST(request: Request) {
       if (!chunk.byteLength || chunk.byteLength > 3.25 * 1024 * 1024) {
         return NextResponse.json({ error: "Invalid PDF upload part." }, { status: 400 });
       }
-      const form = new FormData();
-      form.append("data", new Blob([chunk], { type: "application/octet-stream" }), "part.bin");
-      const response = await fetch(`https://api.openai.com/v1/uploads/${encodeURIComponent(uploadId)}/parts`, { method: "POST", headers, body: form });
+      const response = await fetchOpenAiWithRetry(`https://api.openai.com/v1/uploads/${encodeURIComponent(uploadId)}/parts`, () => {
+        const form = new FormData();
+        form.append("data", new Blob([chunk], { type: "application/octet-stream" }), "part.bin");
+        return { method: "POST", headers: { ...headers, "Idempotency-Key": idempotencyKey }, body: form };
+      });
       const result = await openAiJson(response);
       if (result.errorResponse) return result.errorResponse;
       return NextResponse.json({ partId: result.payload.id });
@@ -64,11 +70,12 @@ export async function POST(request: Request) {
       if (!partIds.length || partIds.some((id: string) => !/^part[-_][A-Za-z0-9_-]+$/.test(id))) {
         return NextResponse.json({ error: "Invalid upload parts." }, { status: 400 });
       }
-      const response = await fetch(`https://api.openai.com/v1/uploads/${encodeURIComponent(uploadId)}/complete`, {
+      const completeBody = JSON.stringify({ part_ids: partIds });
+      const response = await fetchOpenAiWithRetry(`https://api.openai.com/v1/uploads/${encodeURIComponent(uploadId)}/complete`, () => ({
         method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ part_ids: partIds }),
-      });
+        headers: { ...headers, "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: completeBody,
+      }));
       const result = await openAiJson(response);
       if (result.errorResponse) return result.errorResponse;
       const fileId = result.payload?.file?.id;
