@@ -11269,11 +11269,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               </div>
               )}
 
-              {/* Production drawing PDF (Planning page) */}
-              {planningMode && (
+              {/* Production drawing PDF — available in Planning and the manual Builder. */}
+              {(planningMode || !soMode) && (
                 <div className="card">
                   <h2 style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-                    <span>① Import Production Drawing PDF</span>
+                    <span>{planningMode ? "①" : "②"} Import Production Drawing PDF</span>
                     <label className="addbtn" style={{ fontSize: 11, cursor: planningPdfLoading ? "wait" : "pointer", opacity: planningPdfLoading ? 0.65 : 1 }}>
                       {planningPdfLoading ? "Reading drawing…" : "Choose PDF…"}
                       <input
@@ -11286,7 +11286,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                     </label>
                   </h2>
                   <div style={{ fontSize: 11, color: "var(--ink)", opacity: 0.72, lineHeight: 1.5 }}>
-                    Upload the final production drawing. The importer reads specifications and elevations, matches each callout to the current cabinet catalogue, and prepares a review draft. Existing project lines are preserved when the draft is appended.
+                    Upload the final production drawing. The importer reads specifications and elevations, matches each callout to the current cabinet catalogue, and prepares a review draft. Existing project lines are preserved when the draft is appended.{!planningMode && " Use Configure Unit to add any cabinet the drawing import missed."}
                   </div>
                   {planningPdfMsg && (
                     <div style={{ marginTop: 9, fontSize: 12, fontWeight: 600, color: planningPdfMsg.startsWith("Could not") || planningPdfMsg.startsWith("No complete") ? "#c0392b" : "var(--accent)" }}>
