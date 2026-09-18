@@ -15,6 +15,7 @@ import type {
 import { isComposite, collectMappedItemIds, getCfValue } from "@/lib/stock";
 import { normalizePartOrPanelName } from "@/lib/naming";
 import { mergeLocalCatalogItems } from "@/lib/itemCatalogClient";
+import { finishSearchAliases, normalizeFinishName } from "@/lib/finishReferences";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -453,20 +454,23 @@ async function findAllStonesInBomChain(
  */
 async function findDefaultStone(finish: string, stoneThickness: string): Promise<ItemDetail | null> {
   const targetThickness = parseFloat(stoneThickness) || 0;
-  const finishLower = finish.toLowerCase();
+  const finishAliases = finishSearchAliases(finish).map(normalizeFinishName);
 
   const matchItem = (item: ItemDetail): boolean => {
     if (isComposite(item)) return false;
     const cfGroup = getCfValue(item, "cf_group").toLowerCase();
     const groupName = (item.group_name || "").toLowerCase();
     if (!cfGroup.includes("stone") && !groupName.includes("stone")) return false;
-    const itemFinish = getCfValue(item, "cf_finish").toLowerCase();
+    const itemFinish = normalizeFinishName(getCfValue(item, "cf_finish"));
+    const itemName = normalizeFinishName(item.name || "");
     const itemThickness = parseFloat(getCfValue(item, "cf_thickness")) || 0;
-    const matchFinish = itemFinish.includes(finishLower) || finishLower.includes(itemFinish);
+    const matchFinish = finishAliases.some((alias) =>
+      (!!itemFinish && (itemFinish.includes(alias) || alias.includes(itemFinish))) || itemName.includes(alias)
+    );
     return matchFinish && itemThickness === targetThickness;
   };
 
-  const queries = [`STONE ${stoneThickness}`, finish, "STONE"];
+  const queries = Array.from(new Set([`STONE ${stoneThickness}`, ...finishSearchAliases(finish), "STONE"]));
 
   for (const query of queries) {
     try {
@@ -639,7 +643,7 @@ const STONE_COLOR_QUALIFIERS = new Set([
 
 export async function searchStoneItems(finish: string, stoneThickness: string, excludeStoneId?: string): Promise<ItemDetail[]> {
   const targetThickness = parseFloat(stoneThickness) || 0;
-  const finishLower = finish.toLowerCase();
+  const finishAliases = finishSearchAliases(finish).map(normalizeFinishName);
 
   const isStoneItem = (item: ItemDetail): boolean => {
     if (isComposite(item)) return false;
@@ -667,30 +671,25 @@ export async function searchStoneItems(finish: string, stoneThickness: string, e
 
   // Finish / thickness can come from the custom fields OR the item name (cf fields are
   // often blank on stone slabs).
-  // STRICT: the requested colour matches EXACTLY — cf_finish equals it, or the colour appears in the
-  // name as a complete phrase NOT followed by another colour word. This stops "Taj Mahal" from
-  // matching a different stone like "Taj Mahal Bianco" (contains "taj mahal" but is a distinct colour).
-  const escFinish = finishLower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const strictRe = new RegExp(escFinish + "(?![a-z])(?!\\s+[a-z])", "i");
+  // STRICT: one of the requested/reference colours exactly equals cf_finish. Name-only matches are
+  // ranked below this so "Taj Mahal" does not outrank a distinct "Taj Mahal Bianco" catalogue finish.
   const finishMatchesStrict = (item: ItemDetail): boolean => {
-    const cf = getCfValue(item, "cf_finish").toLowerCase().trim();
-    if (cf) return cf === finishLower;
-    return strictRe.test((item.name || "").toLowerCase());
+    const cf = normalizeFinishName(getCfValue(item, "cf_finish"));
+    return !!cf && finishAliases.includes(cf);
   };
   // EXACT: the item's finish (cf or name) contains the full requested finish string.
   const finishMatchesExact = (item: ItemDetail): boolean => {
-    const cf = getCfValue(item, "cf_finish").toLowerCase();
-    const name = (item.name || "").toLowerCase();
-    return (!!cf && (cf.includes(finishLower) || finishLower.includes(cf))) || name.includes(finishLower);
+    const cf = normalizeFinishName(getCfValue(item, "cf_finish"));
+    const name = normalizeFinishName(item.name || "");
+    return finishAliases.some((alias) => (!!cf && (cf.includes(alias) || alias.includes(cf))) || name.includes(alias));
   };
   // CORE: colour-qualifier words (BLACK / WHITE / …) are optional, so a slab catalogued under
   // the bare stone name (e.g. "STATUARIO NUVOLATO" for the colour "BLACK STATUARIO NUVOLATO")
   // still matches. Requires every non-qualifier token of the requested finish to appear.
-  const coreTokens = finishLower.split(/\s+/).filter((t) => t && !STONE_COLOR_QUALIFIERS.has(t));
+  const coreTokenGroups = finishAliases.map((alias) => alias.toLowerCase().split(/\s+/).filter((t) => t && !STONE_COLOR_QUALIFIERS.has(t)));
   const finishMatchesCore = (item: ItemDetail): boolean => {
-    if (coreTokens.length === 0) return finishMatchesExact(item);
-    const hay = (getCfValue(item, "cf_finish").toLowerCase() + " " + (item.name || "").toLowerCase());
-    return coreTokens.every((t) => hay.includes(t));
+    const hay = normalizeFinishName(`${getCfValue(item, "cf_finish")} ${item.name || ""}`).toLowerCase();
+    return coreTokenGroups.some((tokens) => tokens.length > 0 && tokens.every((t) => hay.includes(t))) || finishMatchesExact(item);
   };
   const thicknessOf = (item: ItemDetail): number =>
     (parseFloat(getCfValue(item, "cf_thickness")) || 0) || thicknessFromName(item.name || "");
@@ -707,7 +706,7 @@ export async function searchStoneItems(finish: string, stoneThickness: string, e
     return [...strict, ...exact, ...core];
   };
 
-  const queries = [`STONE ${stoneThickness}`, finish, "STONE"];
+  const queries = Array.from(new Set([`STONE ${stoneThickness}`, ...finishSearchAliases(finish), "STONE"]));
   const seen = new Set<string>();
   const candidates: ItemDetail[] = [];
   let lastError: unknown = null;

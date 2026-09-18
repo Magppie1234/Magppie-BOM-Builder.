@@ -1,5 +1,6 @@
 import catalogData from "@/data/item_catalog.json";
 import type { ItemDetail } from "@/lib/types";
+import { finishSearchAliases } from "@/lib/finishReferences";
 
 export const ITEM_CATALOG_BY_ID = catalogData as unknown as Record<string, ItemDetail>;
 export const ITEM_CATALOG = Object.values(ITEM_CATALOG_BY_ID);
@@ -18,11 +19,14 @@ function searchable(item: ItemDetail): string {
 }
 
 export function searchCatalogItems(query: string, name = ""): ItemDetail[] {
-  const terms = (query || name).toLowerCase().trim().split(/\s+/).filter(Boolean);
-  if (!terms.length) return ITEM_CATALOG;
+  const input = query || name;
+  const termGroups = finishSearchAliases(input)
+    .map((alias) => alias.toLowerCase().trim().split(/\s+/).filter(Boolean))
+    .filter((terms) => terms.length > 0);
+  if (!termGroups.length) return ITEM_CATALOG;
   return ITEM_CATALOG.filter((item) => {
     const haystack = searchable(item);
-    return terms.every((term) => haystack.includes(term));
+    return termGroups.some((terms) => terms.every((term) => haystack.includes(term)));
   });
 }
 

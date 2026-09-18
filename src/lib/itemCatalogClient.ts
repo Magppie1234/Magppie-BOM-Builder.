@@ -1,4 +1,5 @@
 import type { ItemDetail } from "@/lib/types";
+import { finishSearchAliases } from "@/lib/finishReferences";
 
 export const LOCAL_ITEM_CATALOG_KEY = "magppie-item-catalog-v1";
 
@@ -27,10 +28,12 @@ function itemText(item: ItemDetail): string {
 }
 
 export function mergeLocalCatalogItems(items: ItemDetail[], query = ""): ItemDetail[] {
-  const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  const termGroups = finishSearchAliases(query)
+    .map((alias) => alias.toLowerCase().trim().split(/\s+/).filter(Boolean))
+    .filter((terms) => terms.length > 0);
   const additions = readLocalCatalogItems().filter((item) => {
     const text = itemText(item);
-    return terms.every((term) => text.includes(term));
+    return termGroups.length === 0 || termGroups.some((terms) => terms.every((term) => text.includes(term)));
   });
   const merged = new Map<string, ItemDetail>();
   [...additions, ...items].forEach((item) => merged.set(item.item_id, item));
