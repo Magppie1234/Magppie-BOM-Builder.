@@ -329,6 +329,23 @@ interface ProjectLine {
   upProfile?: string;        // profile colour
 }
 
+type PlanningPdfCabinet = {
+  page: number; elevation: string; sourceLabel: string;
+  zoneKey: string; familyKey: string; variantId: string;
+  width: number | null; height: number | null; depth: number | null; thickness: number | null;
+  hand: "LHS" | "RHS" | ""; handle: "STD" | "XCJ"; qty: number;
+  confidence: number; warnings: string[];
+};
+type PlanningPdfResult = {
+  project: { customerName: string; carcassFinish: string; shutterFinish: string; profileFinish: string; shutterDesign: string; notes: string[] };
+  cabinets: PlanningPdfCabinet[];
+  fillers: Array<{ page: number; elevation: string; zone: string; width: number | null; height: number | null; qty: number; finish: string; confidence: number }>;
+  visiblePanels: Array<{ page: number; elevation: string; zone: string; width: number | null; height: number | null; qty: number; finish: string; profile: string; confidence: number }>;
+  countertops: Array<{ page: number; elevation: string; length: number | null; depth: number | null; thickness: number | null; qty: number; finish: string; confidence: number }>;
+  backsplashes: Array<{ page: number; elevation: string; width: number | null; height: number | null; thickness: number | null; qty: number; finish: string; confidence: number }>;
+  warnings: string[];
+};
+
 // ---- Accessory Types ----
 type AccessoryKey = "skirting" | "duplay" | "lprofile" | "jhandle" | "chandle" | "grandlight" | "langle";
 
@@ -7129,6 +7146,27 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   // Import a previously-exported "Builder BOM" .xlsx to auto-populate the whole project.
   const [importMsg, setImportMsg] = useState<string>("");
 
+  // Planning PDF import — OpenAI reads the scanned production drawing, but the browser resolves
+  // every extracted row against the builder's own live cabinet catalogue before it can be added.
+  const [planningPdfResult, setPlanningPdfResult] = useState<PlanningPdfResult | null>(null);
+  const [planningPdfMsg, setPlanningPdfMsg] = useState<string>("");
+  const [planningPdfLoading, setPlanningPdfLoading] = useState(false);
+  const planningPdfCatalog = useMemo(() => {
+    const unique = new Map<string, { zoneKey: string; zoneLabel: string; familyKey: string; familyLabel: string; variantId: string; variantLabel: string }>();
+    enumerateCombinations().forEach((c) => {
+      const key = `${c.zk}|${c.fk}|${c.v.id}`;
+      if (!unique.has(key)) unique.set(key, {
+        zoneKey: c.zk,
+        zoneLabel: String(c.z.label || c.z.name || c.zk),
+        familyKey: c.fk,
+        familyLabel: String(c.f.label || c.f.name || c.fk),
+        variantId: String(c.v.id),
+        variantLabel: String(c.v.label || c.v.id),
+      });
+    });
+    return Array.from(unique.values());
+  }, []);
+
   // Stock check state
   const [stockMap, setStockMap] = useState<Record<string, StockItem>>({});
   const [packingFilter, setPackingFilter] = useState<"both" | "carcass" | "shutter">("both");
@@ -7464,6 +7502,119 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       console.warn("Upload parse error:", err);
       setUploadMsg(`Could not read the file: ${err?.message || "invalid format"}`);
     }
+  };
+
+  const handlePlanningPdfUpload = async (file: File) => {
+    try {
+      setPlanningPdfLoading(true);
+      setPlanningPdfResult(null);
+      setPlanningPdfMsg("Reading every page and matching cabinets to the builder catalogue…");
+
+      // Only distinct cabinet configurations are sent. Dimensions remain those printed in the
+      // drawing and are applied to buildModel below, so custom-size cabinets are supported.
+      const body = new FormData();
+      body.append("file", file);
+      body.append("catalog", JSON.stringify(planningPdfCatalog));
+      const response = await fetch("/api/planning/pdf", { method: "POST", body });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Could not extract this drawing.");
+      const result = payload.result as PlanningPdfResult;
+      setPlanningPdfResult(result);
+      const reviewCount = (result.cabinets || []).filter((c) => c.confidence < 0.85 || c.warnings.length > 0 || !c.width || !c.height || !c.depth).length;
+      setPlanningPdfMsg(`Found ${result.cabinets.length} cabinet row(s)${reviewCount ? ` · ${reviewCount} need review` : " · all high confidence"}. Check the draft, then append it.`);
+    } catch (err: any) {
+      setPlanningPdfMsg(`Could not read the PDF: ${err?.message || "unknown error"}`);
+    } finally {
+      setPlanningPdfLoading(false);
+    }
+  };
+
+  const updatePlanningPdfCabinet = (index: number, patch: Partial<PlanningPdfCabinet>) =>
+    setPlanningPdfResult((current) => current ? {
+      ...current,
+      cabinets: current.cabinets.map((cabinet, i) => i === index ? { ...cabinet, ...patch } : cabinet),
+    } : current);
+
+  const removePlanningPdfCabinet = (index: number) =>
+    setPlanningPdfResult((current) => current ? { ...current, cabinets: current.cabinets.filter((_, i) => i !== index) } : current);
+
+  const applyPlanningPdfDraft = () => {
+    if (!planningPdfResult) return;
+    const cleanFinish = (value: string, fallback: string) => {
+      const cleaned = String(value || "").toUpperCase().replace(/^MAGPPIE\s+/, "").replace(/\s*\([^)]*\)\s*/g, " ").trim();
+      return cleaned || fallback;
+    };
+    const globalCarcass = cleanFinish(planningPdfResult.project.carcassFinish, carcassMat);
+    const globalShutter = cleanFinish(planningPdfResult.project.shutterFinish, shutterMat);
+    const profileMap = (planningFinishesData as any).profileFinishMap as Record<string, string>;
+    const rawProfile = planningPdfResult.project.profileFinish || "";
+    const globalProfile = profileMap[rawProfile] || (/light\s*bronze/i.test(rawProfile) ? "CHAMPAGNE" : rawProfile.toUpperCase()) || shutterProfileColor;
+    const rawDesign = String(planningPdfResult.project.shutterDesign || "").toUpperCase().replace(/\s*\+\s*/g, "");
+    const globalDesign = SH_DESIGNS.includes(rawDesign) ? rawDesign : /ESSAN|TITUS/.test(rawDesign) ? "MD2" : design;
+    const lines: ProjectLine[] = [];
+    let skipped = 0;
+
+    planningPdfResult.cabinets.forEach((c) => {
+      const fams = famSetOf(c.zoneKey);
+      const familyObj = fams?.[c.familyKey];
+      const variantObj = familyObj?.variants?.find((v: any) => String(v.id) === String(c.variantId));
+      if (!familyObj || !variantObj || !c.width || !c.height || !c.depth) { skipped++; return; }
+      const chosenDesign = isGlassShutterFam(c.familyKey) ? "NEON20" : globalDesign;
+      const chosenHandle = STD_DESIGNS.includes(chosenDesign) ? "STD" : XCJ_DESIGNS.includes(chosenDesign) ? "XCJ" : c.handle;
+      try {
+        const model = buildModel(
+          c.zoneKey, c.familyKey, variantObj, chosenHandle, chosenDesign,
+          globalCarcass, globalShutter, globalProfile, globalProfile,
+          Math.round(c.width), Math.round(c.height), Math.round(c.depth), Math.round(c.thickness || 15), c.hand || "LHS"
+        );
+        lines.push({ qty: Math.max(1, c.qty || 1), m: model, rate: 0, elevation: c.elevation || `Page ${c.page}` });
+      } catch { skipped++; }
+    });
+
+    if (!lines.length) {
+      setPlanningPdfMsg("No complete cabinet rows can be appended yet. Correct the missing dimensions in the draft.");
+      return;
+    }
+    setProject((current) => [...current, ...lines]);
+    setCarcassMat(globalCarcass);
+    setShutterMat(globalShutter);
+    setCarcassProfileColor(globalProfile);
+    setShutterProfileColor(globalProfile);
+    setDesign(globalDesign);
+
+    const nextFillerId = fillers.reduce((m, r) => Math.max(m, r.id), 0);
+    const newFillers: FillerRow[] = planningPdfResult.fillers.filter((r) => r.width && r.height).map((r, i) => ({
+      id: nextFillerId + i + 1, zone: r.zone || "base", customShade: cleanFinish(r.finish, globalCarcass), qty: r.qty,
+      customHeight: String(Math.round(r.height!)), customWidth: String(Math.round(r.width!)), elevation: r.elevation || `Page ${r.page}`,
+    }));
+    if (newFillers.length) setFillers((current) => [...current, ...newFillers]);
+
+    const nextPanelId = visiblePanels.reduce((m, r) => Math.max(m, r.id), 0);
+    const newPanels: VisiblePanelRow[] = planningPdfResult.visiblePanels.filter((r) => r.width && r.height).map((r, i) => ({
+      id: nextPanelId + i + 1, zone: r.zone || "base", customShade: cleanFinish(r.finish, globalCarcass), qty: r.qty,
+      profile: SH_DESIGNS.includes(String(r.profile).toUpperCase()) ? String(r.profile).toUpperCase() : globalDesign,
+      customHeight: String(Math.round(r.height!)), customWidth: String(Math.round(r.width!)), elevation: r.elevation || `Page ${r.page}`,
+    }));
+    if (newPanels.length) setVisiblePanels((current) => [...current, ...newPanels]);
+
+    const nextBacksplashId = backsplashes.reduce((m, r) => Math.max(m, r.id), 0);
+    const newBacksplashes: BacksplashRow[] = planningPdfResult.backsplashes.filter((r) => r.width && r.height).map((r, i) => ({
+      id: nextBacksplashId + i + 1, width: String(Math.round(r.width!)), height: String(Math.round(r.height!)),
+      thickness: String(Math.round(r.thickness || 15)), color: cleanFinish(r.finish, globalCarcass), qty: r.qty, elevation: r.elevation || `Page ${r.page}`,
+    }));
+    if (newBacksplashes.length) setBacksplashes((current) => [...current, ...newBacksplashes]);
+
+    const nextCounterId = countertops.reduce((m, r) => Math.max(m, r.id), 0);
+    const newCounters: CountertopRow[] = planningPdfResult.countertops.filter((r) => r.length && r.depth).map((r, i) => ({
+      id: nextCounterId + i + 1, length: String(Math.round(r.length!)), depth: String(Math.round(r.depth!)),
+      thickness: String(Math.round(r.thickness || 30)), color: cleanFinish(r.finish, globalCarcass), ctType: 1, edging: "none",
+      edgingHeight: "600", dropHeight: "830", left: "none", right: "none", island: false, baseLight: true, driver: "",
+      qty: r.qty, elevation: r.elevation || `Page ${r.page}`,
+    }));
+    if (newCounters.length) setCountertops((current) => [...current, ...newCounters]);
+
+    setPlanningPdfMsg(`Appended ${lines.length} cabinet row(s), ${newFillers.length} filler(s), ${newPanels.length} visible panel(s), ${newCounters.length} countertop(s) and ${newBacksplashes.length} backsplash row(s)${skipped ? ` · ${skipped} incomplete cabinet row(s) skipped` : ""}.`);
+    setPlanningPdfResult(null);
   };
 
   // Import a previously-exported Builder BOM sheet and reconstruct the whole project (cabinets,
@@ -10356,7 +10507,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         <div>
           <div className="sub">
             {planningMode
-              ? "Planning · Upload cabinet codes / Sales Order → choose shutter colour → BoM"
+              ? "Planning · Upload production drawing PDF → review cabinets → export BoM"
               : soMode
               ? "Designer · Sales Order → cabinet codes fetched → Raw BoM → Project Totals"
               : "Kitchen Carcass · Code → Packets → Raw BoM → Project Totals"}
@@ -10968,7 +11119,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
           {activeTab === "proj" && (
             <div>
               {/* ① Zoho Sales Order — hidden on the Designer page (it uses the Excel upload instead) */}
-              {!canDesignerUpload && (
+              {!canDesignerUpload && !planningMode && (
               <div className="card" style={{ position: "relative" }}>
                 <h2>① Zoho Sales Order</h2>
 
@@ -11077,6 +11228,97 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                   </div>
                 )}
               </div>
+              )}
+
+              {/* Production drawing PDF (Planning page) */}
+              {planningMode && (
+                <div className="card">
+                  <h2 style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                    <span>① Import Production Drawing PDF</span>
+                    <label className="addbtn" style={{ fontSize: 11, cursor: planningPdfLoading ? "wait" : "pointer", opacity: planningPdfLoading ? 0.65 : 1 }}>
+                      {planningPdfLoading ? "Reading drawing…" : "Choose PDF…"}
+                      <input
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        disabled={planningPdfLoading}
+                        style={{ display: "none" }}
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handlePlanningPdfUpload(f); e.target.value = ""; }}
+                      />
+                    </label>
+                  </h2>
+                  <div style={{ fontSize: 11, color: "var(--ink)", opacity: 0.72, lineHeight: 1.5 }}>
+                    Upload the final production drawing. The importer reads specifications and elevations, matches each callout to the current cabinet catalogue, and prepares a review draft. Existing project lines are preserved when the draft is appended.
+                  </div>
+                  {planningPdfMsg && (
+                    <div style={{ marginTop: 9, fontSize: 12, fontWeight: 600, color: planningPdfMsg.startsWith("Could not") || planningPdfMsg.startsWith("No complete") ? "#c0392b" : "var(--accent)" }}>
+                      {planningPdfMsg}
+                    </div>
+                  )}
+
+                  {planningPdfResult && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ padding: 10, background: "rgba(106, 98, 86, 0.05)", border: "1px solid var(--line)", borderRadius: 4, fontSize: 11, lineHeight: 1.55 }}>
+                        <b>{planningPdfResult.project.customerName || "Kitchen project"}</b><br />
+                        Carcass: {planningPdfResult.project.carcassFinish || "Not read"} · Shutter: {planningPdfResult.project.shutterFinish || "Not read"} · Profile: {planningPdfResult.project.profileFinish || "Not read"} · Design: {planningPdfResult.project.shutterDesign || "Not read"}
+                      </div>
+                      <div style={{ overflowX: "auto", marginTop: 10 }}>
+                        <table className="bomtable" style={{ minWidth: 980 }}>
+                          <thead><tr><th>Page / Elev.</th><th>Drawing callout</th><th>Matched cabinet</th><th>W</th><th>H</th><th>D</th><th>Qty</th><th>Confidence</th><th></th></tr></thead>
+                          <tbody>
+                            {planningPdfResult.cabinets.map((c, i) => {
+                              const familyObj = famSetOf(c.zoneKey)?.[c.familyKey];
+                              const variantObj = familyObj?.variants?.find((v: any) => String(v.id) === String(c.variantId));
+                              const needsReview = c.confidence < 0.85 || c.warnings.length > 0 || !c.width || !c.height || !c.depth || !familyObj || !variantObj;
+                              return (
+                                <tr key={`${c.page}-${c.elevation}-${i}`} style={{ background: needsReview ? "#fff8e6" : undefined }}>
+                                  <td>{c.page} / {c.elevation || "—"}</td>
+                                  <td style={{ maxWidth: 260 }}><b>{c.sourceLabel || "Unlabelled cabinet"}</b>{c.warnings.length > 0 && <div style={{ color: "#9a6700", marginTop: 3 }}>{c.warnings.join(" · ")}</div>}</td>
+                                  <td>
+                                    <select
+                                      value={`${c.zoneKey}|${c.familyKey}|${c.variantId}`}
+                                      onChange={(e) => {
+                                        const [zoneKey, familyKey, variantId] = e.target.value.split("|");
+                                        updatePlanningPdfCabinet(i, { zoneKey, familyKey, variantId });
+                                      }}
+                                      style={{ minWidth: 235, maxWidth: 300, padding: "4px 5px", fontSize: 11 }}
+                                    >
+                                      {planningPdfCatalog.map((option) => (
+                                        <option key={`${option.zoneKey}|${option.familyKey}|${option.variantId}`} value={`${option.zoneKey}|${option.familyKey}|${option.variantId}`}>
+                                          {option.zoneLabel} · {option.familyLabel} · {option.variantLabel}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    {variantObj?.handed && (
+                                      <select value={c.hand || "LHS"} onChange={(e) => updatePlanningPdfCabinet(i, { hand: e.target.value as "LHS" | "RHS" })} style={{ marginLeft: 5, padding: "4px 5px", fontSize: 11 }}>
+                                        <option value="LHS">LHS</option><option value="RHS">RHS</option>
+                                      </select>
+                                    )}
+                                  </td>
+                                  {(["width", "height", "depth"] as const).map((field) => (
+                                    <td key={field}><input type="number" min={1} value={c[field] ?? ""} onChange={(e) => updatePlanningPdfCabinet(i, { [field]: e.target.value ? Number(e.target.value) : null })} style={{ width: 72, padding: "4px 5px", fontSize: 11 }} /></td>
+                                  ))}
+                                  <td><input type="number" min={1} value={c.qty} onChange={(e) => updatePlanningPdfCabinet(i, { qty: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 52, padding: "4px 5px", fontSize: 11 }} /></td>
+                                  <td style={{ color: needsReview ? "#9a6700" : "#26734d", fontWeight: 700 }}>{Math.round(c.confidence * 100)}%</td>
+                                  <td><button className="delbtn" onClick={() => removePlanningPdfCabinet(i)}>Remove</button></td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      {(planningPdfResult.warnings.length > 0 || planningPdfResult.project.notes.length > 0) && (
+                        <details style={{ marginTop: 9, fontSize: 11 }}>
+                          <summary style={{ cursor: "pointer", fontWeight: 700 }}>Drawing notes and import warnings</summary>
+                          <ul>{[...planningPdfResult.warnings, ...planningPdfResult.project.notes].map((note, i) => <li key={i}>{note}</li>)}</ul>
+                        </details>
+                      )}
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+                        <button className="delbtn" onClick={() => { setPlanningPdfResult(null); setPlanningPdfMsg(""); }}>Discard draft</button>
+                        <button className="addbtn" onClick={applyPlanningPdfDraft} disabled={planningPdfResult.cabinets.length === 0}>Append draft to project</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* Upload Cabinet Codes (Designer page) */}
