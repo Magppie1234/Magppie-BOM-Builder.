@@ -11902,11 +11902,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                     <div style={{ fontSize: "12px", color: "var(--ink)", opacity: 0.6 }}>Loading stone items...</div>
                                   ) : rawErrorMap[key] ? (
                                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                      <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Zoho API error — check your network connection.</div>
+                                      <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Item catalogue error — check your network connection.</div>
                                       <button className="clr" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => retryRawFetch(key)}>Retry</button>
                                     </div>
                                   ) : items.length === 0 ? (
-                                    <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching {thickness}mm stone items found in Zoho for finish &quot;{finish}&quot;.</div>
+                                    <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching {thickness}mm stone items found in the item catalogue for finish &quot;{finish}&quot;.</div>
                                   ) : (
                                     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                                       <SearchableSelect
@@ -11930,7 +11930,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                               </div>
                                             </>
                                           ) : (
-                                            <div style={{ color: "var(--warn)" }}>Slab dimensions missing in Zoho custom fields (cf_height / cf_width).</div>
+                                            <div style={{ color: "var(--warn)" }}>Slab dimensions are missing from the item catalogue.</div>
                                           )}
                                         </div>
                                       )}
@@ -11970,11 +11970,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                     <div style={{ fontSize: "12px", color: "var(--ink)", opacity: 0.6 }}>Loading profiles...</div>
                                   ) : rawErrorMap[key] ? (
                                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                      <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Zoho API error — check your network connection.</div>
+                                      <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Item catalogue error — check your network connection.</div>
                                       <button className="clr" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => retryRawFetch(key)}>Retry</button>
                                     </div>
                                   ) : items.length === 0 ? (
-                                    <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching profile items found in Zoho for finish &quot;{finish}&quot; with code &quot;{profileCode}&quot;.</div>
+                                    <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching profile items found in the item catalogue for finish &quot;{finish}&quot; with code &quot;{profileCode}&quot;.</div>
                                   ) : (
                                     <>
                                       <SearchableSelect
@@ -12034,11 +12034,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                       <div style={{ fontSize: "12px", color: "var(--ink)", opacity: 0.6 }}>Loading stone items...</div>
                                     ) : rawErrorMap[key] ? (
                                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                        <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Zoho API error — check your network connection.</div>
+                                        <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Item catalogue error — check your network connection.</div>
                                         <button className="clr" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => retryRawFetch(key)}>Retry</button>
                                       </div>
                                     ) : items.length === 0 ? (
-                                      <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching {thickness}mm stone items found in Zoho for finish &quot;{finish}&quot;.</div>
+                                      <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching {thickness}mm stone items found in the item catalogue for finish &quot;{finish}&quot;.</div>
                                     ) : (
                                       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                                         <SearchableSelect
@@ -12062,7 +12062,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                                 </div>
                                               </>
                                             ) : (
-                                              <div style={{ color: "var(--warn)" }}>Slab dimensions missing in Zoho custom fields (cf_height / cf_width).</div>
+                                              <div style={{ color: "var(--warn)" }}>Slab dimensions are missing from the item catalogue.</div>
                                             )}
                                           </div>
                                         )}
@@ -12102,11 +12102,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                       <div style={{ fontSize: "12px", color: "var(--ink)", opacity: 0.6 }}>Loading profiles...</div>
                                     ) : rawErrorMap[key] ? (
                                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                        <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Zoho API error — check your network connection.</div>
+                                        <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Item catalogue error — check your network connection.</div>
                                         <button className="clr" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => retryRawFetch(key)}>Retry</button>
                                       </div>
                                     ) : items.length === 0 ? (
-                                      <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching profile items found in Zoho for finish &quot;{finish}&quot; with code &quot;{profileCode}&quot;.</div>
+                                      <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching profile items found in the item catalogue for finish &quot;{finish}&quot; with code &quot;{profileCode}&quot;.</div>
                                     ) : (
                                       <>
                                         <SearchableSelect
@@ -12157,11 +12157,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                   <div style={{ fontSize: "12px", color: "var(--ink)", opacity: 0.6 }}>Searching item catalogue...</div>
                                 ) : rawErrorMap[key] ? (
                                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                    <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Zoho API error — check your network connection.</div>
+                                    <div style={{ fontSize: "12px", color: "#c0392b" }}>⚠ Item catalogue error — check your network connection.</div>
                                     <button className="clr" style={{ fontSize: "11px", padding: "2px 8px" }} onClick={() => retryRawFetch(key)}>Retry</button>
                                   </div>
                                 ) : items.length === 0 ? (
-                                  <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching items found in Zoho for &quot;{name}&quot;.</div>
+                                  <div style={{ fontSize: "12px", color: "var(--warn)" }}>No matching items found in the item catalogue for &quot;{name}&quot;.</div>
                                 ) : (
                                   <>
                                     <SearchableSelect
@@ -13068,7 +13068,7 @@ export function CombinationsExport() {
   const [zoneFilter, setZoneFilter] = useState<string>("all");
   const [famFilter, setFamFilter] = useState<string>("all");
   // Default to the FIRST valid shade in each thickness list — a default that isn't in the dropdown
-  // makes the <select> DISPLAY the first option while the state (and Zoho search) stays on the invalid
+  // makes the <select> DISPLAY the first option while the state (and catalogue search) stays on the invalid
   // default, so the shown stone item wouldn't match the shown shade.
   const [carcassMat, setCarcassMat] = useState<string>(() => ((stoneFinishesData as Record<string, string[]>)["15"] || [])[0] || "STATUARIO");
   const [shutterMat, setShutterMat] = useState<string>(() => ((stoneFinishesData as Record<string, string[]>)["6"] || [])[0] || "STATUARIO");
@@ -13078,7 +13078,7 @@ export function CombinationsExport() {
   const [busy, setBusy] = useState<string>("");
   const PROFILE_COLORS = ["BRUSH GOLD", "CERAMIC BLACK", "CHAMPAGNE"];
 
-  // Actual Zoho stone ITEMS for the chosen shades (same search the builder uses) — so exports carry
+  // Actual catalogue stone ITEMS for the chosen shades (same search the builder uses) — so exports carry
   // the real slab item (name + slab size), not just the finish label. Keyed carcass|{shade}|15 and
   // shutter|{shade}|6, wired into selectedRawIds when downloading.
   const [carcassStoneItems, setCarcassStoneItems] = useState<any[]>([]);

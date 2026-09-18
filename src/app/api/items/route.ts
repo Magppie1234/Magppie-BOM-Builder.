@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const search = searchParams.get("search") || "";
   const name = searchParams.get("name") || "";
-  const limit = Math.min(1000, Math.max(1, Number(searchParams.get("limit")) || 200));
+  const limit = Math.min(20000, Math.max(1, Number(searchParams.get("limit")) || 200));
   const items = searchCatalogItems(search, name);
   return NextResponse.json({ items: items.slice(0, limit), total: items.length });
 }

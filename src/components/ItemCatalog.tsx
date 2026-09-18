@@ -33,7 +33,7 @@ export function ItemCatalog() {
   async function loadItems() {
     setLoading(true);
     try {
-      const response = await fetch("/api/items?limit=1000", { cache: "no-store" });
+      const response = await fetch("/api/items?limit=20000", { cache: "no-store" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Unable to load items");
       setItems(mergeLocalCatalogItems(body.items || []));

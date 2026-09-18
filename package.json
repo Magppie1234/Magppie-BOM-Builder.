@@ -6,7 +6,8 @@
     "dev": "NEXT_TEST_WASM_DIR=$PWD/node_modules/@next/swc-wasm-nodejs next dev --webpack -H 127.0.0.1",
     "build": "NEXT_TEST_WASM_DIR=$PWD/node_modules/@next/swc-wasm-nodejs next build --webpack",
     "start": "next start -H 127.0.0.1",
-    "lint": "next lint"
+    "lint": "next lint",
+    "sync:catalog": "node --env-file=.env.local scripts/sync-item-catalog.mjs"
   },
   "dependencies": {
     "jsbarcode": "^3.12.3",

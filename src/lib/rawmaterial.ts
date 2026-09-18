@@ -626,10 +626,10 @@ export async function resolveRawMaterials(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Search items from Zoho for dropdown                                */
+/*  Search items from the JSON catalogue for dropdown                  */
 /* ------------------------------------------------------------------ */
 
-// Colour-qualifier words that some Zoho slabs omit from the finish name (the bare stone name
+// Colour-qualifier words that some catalogue slabs omit from the finish name (the bare stone name
 // is catalogued). Dropping these lets "BLACK STATUARIO NUVOLATO" match a "STATUARIO NUVOLATO"
 // 15 mm slab while still requiring the distinctive stone tokens to be present.
 const STONE_COLOR_QUALIFIERS = new Set([
