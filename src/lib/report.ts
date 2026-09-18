@@ -31,7 +31,7 @@ async function fetchItem(
 ): Promise<ItemDetail | null> {
   if (id in itemsById) return itemsById[id];
   try {
-    const body = await fetchJson<{ item: ItemDetail }>(`/api/zoho/items/${id}`);
+    const body = await fetchJson<{ item: ItemDetail }>(`/api/items/${id}`);
     itemsById[id] = body.item;
     return body.item;
   } catch {

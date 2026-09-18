@@ -11,6 +11,7 @@ import profileFinishesData from "@/data/profile_finishes.json";
 import planningFinishesData from "@/data/planning_finishes.json";
 import hardwareRoutingData from "@/data/hardware_routing.json";
 import { getPartBaseName, getPanelBaseName, normalizePartOrPanelName } from "@/lib/naming";
+import { mergeLocalCatalogItems } from "@/lib/itemCatalogClient";
 
 // ---- Types & Interfaces ----
 interface Panel {
@@ -6274,17 +6275,17 @@ async function searchItemByName(name: string): Promise<any | null> {
         normalizeItemName(it.name) === target || normalizeItemName(it.sku) === target,
     );
 
-  const res = await fetch(`/api/zoho/items?search=${encodeURIComponent(cleanName)}`);
+  const res = await fetch(`/api/items?search=${encodeURIComponent(cleanName)}`);
   if (res.ok) {
     const data = await res.json();
-    const items = data.items || [];
+    const items = mergeLocalCatalogItems(data.items || [], cleanName);
     const match = findMatch(items);
     if (match) return match;
   }
-  const fallbackRes = await fetch(`/api/zoho/items?name=${encodeURIComponent(cleanName)}`);
+  const fallbackRes = await fetch(`/api/items?name=${encodeURIComponent(cleanName)}`);
   if (fallbackRes.ok) {
     const fallbackData = await fallbackRes.json();
-    const fallbackItems = fallbackData.items || [];
+    const fallbackItems = mergeLocalCatalogItems(fallbackData.items || [], cleanName);
     const fallbackMatch = findMatch(fallbackItems);
     if (fallbackMatch) return fallbackMatch;
   }
@@ -6428,16 +6429,16 @@ async function resolveCompositeItem(
 async function findExistingCompositeByRawMaterial(rawMaterialId: string, itemName: string): Promise<string | null> {
   const cleanName = normalizePartOrPanelName(itemName);
   let items: any[] = [];
-  const searchRes = await fetch(`/api/zoho/items?search=${encodeURIComponent(cleanName)}`);
+  const searchRes = await fetch(`/api/items?search=${encodeURIComponent(cleanName)}`);
   if (searchRes.ok) {
     const searchData = await searchRes.json();
-    items = searchData.items || [];
+    items = mergeLocalCatalogItems(searchData.items || [], cleanName);
   }
   if (items.length === 0) {
-    const fallbackRes = await fetch(`/api/zoho/items?name=${encodeURIComponent(cleanName)}`);
+    const fallbackRes = await fetch(`/api/items?name=${encodeURIComponent(cleanName)}`);
     if (fallbackRes.ok) {
       const fallbackData = await fallbackRes.json();
-      items = fallbackData.items || [];
+      items = mergeLocalCatalogItems(fallbackData.items || [], cleanName);
     }
   }
 
@@ -10181,18 +10182,18 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
     for (const name of itemNames) {
       try {
-        const res = await fetch(`/api/zoho/items?search=${encodeURIComponent(name)}`);
+        const res = await fetch(`/api/items?search=${encodeURIComponent(name)}`);
         if (res.ok) {
           const data = await res.json();
-          const items = data.items || [];
+          const items = mergeLocalCatalogItems(data.items || [], name);
           const match = items.find((it: any) => it.name === name || it.sku === name);
           if (match) {
             newMap[name] = { ...newMap[name], stock: match.stock_on_hand ?? 0, loading: false };
           } else {
-            const fbRes = await fetch(`/api/zoho/items?name=${encodeURIComponent(name)}`);
+            const fbRes = await fetch(`/api/items?name=${encodeURIComponent(name)}`);
             if (fbRes.ok) {
               const fbData = await fbRes.json();
-              const fbMatch = (fbData.items || []).find((it: any) => it.name === name);
+              const fbMatch = mergeLocalCatalogItems(fbData.items || [], name).find((it: any) => it.name === name);
               newMap[name] = { ...newMap[name], stock: fbMatch ? (fbMatch.stock_on_hand ?? 0) : null, loading: false };
             } else {
               newMap[name] = { ...newMap[name], stock: null, loading: false };

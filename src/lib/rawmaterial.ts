@@ -78,11 +78,9 @@ export type RawMaterialSelection = {
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-// Client-side concurrency limiter for Zoho reads. A fresh page/deploy aggregates ~10+ raw-material
-// lookups; firing them all at once makes several cold Vercel serverless instances refresh the Zoho
-// token simultaneously, which trips Zoho's "too many requests" limit → a 5-minute token cooldown.
-// Strategy: run the VERY FIRST request alone (limit 1) to warm the token cache, then widen to 6
-// concurrent — fast, but with no cold-start refresh stampede.
+// Client-side concurrency limiter for catalogue and composite-detail reads. Item searches and item
+// details come from the local JSON catalogue; composite details may still require the Zoho-backed
+// composite endpoint while existing sales orders are being inspected.
 const ZOHO_MAX_CONCURRENT = 6;
 let zohoActive = 0;
 let zohoPrimed = false; // set once the first request finishes → concurrency widens from 1 to the max
@@ -111,7 +109,7 @@ async function fetchJson<T>(url: string): Promise<T> {
     const response = await fetch(url, { cache: "no-store" });
     const body = await response.json();
     if (!response.ok) throw new Error((body as { error?: string }).error ?? "Request failed");
-    if ((url.startsWith("/api/items?") || url.startsWith("/api/zoho/items?")) && body && Array.isArray((body as { items?: ItemDetail[] }).items)) {
+    if (url.startsWith("/api/items?") && body && Array.isArray((body as { items?: ItemDetail[] }).items)) {
       const parsed = new URL(url, window.location.origin);
       const query = parsed.searchParams.get("search") || parsed.searchParams.get("name") || "";
       (body as { items: ItemDetail[] }).items = mergeLocalCatalogItems((body as { items: ItemDetail[] }).items, query);
@@ -125,7 +123,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 async function fetchItem(id: string, cache: Record<string, ItemDetail | null>): Promise<ItemDetail | null> {
   if (id in cache) return cache[id];
   try {
-    const body = await fetchJson<{ item: ItemDetail }>(`/api/zoho/items/${id}`);
+    const body = await fetchJson<{ item: ItemDetail }>(`/api/items/${id}`);
     cache[id] = body.item;
     return body.item;
   } catch {
@@ -193,7 +191,7 @@ async function resolveDrillingServiceId(itemsCache: Record<string, ItemDetail | 
   
   try {
     const body = await fetchJson<{ items: ItemDetail[] }>(
-      `/api/zoho/items?search=${encodeURIComponent("Drilling-1")}`
+      `/api/items?search=${encodeURIComponent("Drilling-1")}`
     );
     const match = (body.items || []).find((item) => {
       const n = (item.name || item.item_name || "").toLowerCase();
@@ -473,7 +471,7 @@ async function findDefaultStone(finish: string, stoneThickness: string): Promise
   for (const query of queries) {
     try {
       const body = await fetchJson<{ items: ItemDetail[] }>(
-        `/api/zoho/items?search=${encodeURIComponent(query)}`,
+        `/api/items?search=${encodeURIComponent(query)}`,
       );
       const match = (body.items || []).find(matchItem);
       if (match) return match;
@@ -718,7 +716,7 @@ export async function searchStoneItems(finish: string, stoneThickness: string, e
   for (const query of queries) {
     try {
       const body = await fetchJson<{ items: ItemDetail[] }>(
-        `/api/zoho/items?search=${encodeURIComponent(query)}`,
+        `/api/items?search=${encodeURIComponent(query)}`,
       );
       anySucceeded = true;
       for (const item of body.items || []) {
@@ -841,7 +839,7 @@ export async function searchProfileItems(finish: string, profileCode: string): P
   let errorCount = 0;
   const fetchPromises = searchTerms.map((term) =>
     fetchJson<{ items: ItemDetail[] }>(
-      `/api/zoho/items?search=${encodeURIComponent(term)}`
+      `/api/items?search=${encodeURIComponent(term)}`
     )
       .then((body) => body.items || [])
       .catch((err) => { errorCount++; if (errorCount === searchTerms.length) throw err; return [] as ItemDetail[]; })
@@ -913,7 +911,7 @@ export async function searchProfileItems(finish: string, profileCode: string): P
 
 export async function searchHardwareItems(name: string): Promise<ItemDetail[]> {
   const body = await fetchJson<{ items: ItemDetail[] }>(
-    `/api/zoho/items?search=${encodeURIComponent(name)}`,
+    `/api/items?search=${encodeURIComponent(name)}`,
   );
   return (body.items || []).filter((item) => !isComposite(item));
 }
@@ -952,7 +950,7 @@ async function putJson<T>(url: string, payload: unknown): Promise<T> {
 async function findExistingComposite(name: string): Promise<string | null> {
   try {
     const body = await fetchJson<{ items: ItemDetail[] }>(
-      `/api/zoho/items?name=${encodeURIComponent(name)}`,
+      `/api/items?name=${encodeURIComponent(name)}`,
     );
     const match = (body.items || []).find((item) => {
       const n = (item.name || item.item_name || "").toLowerCase();
@@ -1351,7 +1349,7 @@ async function resolveRawProfileId(rawProfileId: string, finish: string): Promis
   try {
     // Search Zoho first to check if the item has since been created
     const body = await fetchJson<{ items: ItemDetail[] }>(
-      `/api/zoho/items?name=${encodeURIComponent(itemName)}`
+      `/api/items?name=${encodeURIComponent(itemName)}`
     );
     const match = (body.items || []).find(
       (item) => (item.name || item.item_name || "").toLowerCase() === itemName.toLowerCase()
