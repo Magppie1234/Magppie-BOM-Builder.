@@ -1016,9 +1016,9 @@ function addDrawerBoxes(
   drawerModel: string = "Lian",
   inbuiltDrawers: string = "none"
 ) {
-  // Determine effectiveInbuiltDrawers based on cabinet rules. NOTE: WBP (waste-bin pull-out) is
-  // an accessory with NO drawer — it must NOT get a built-in drawer box. Only GD (grain drawer)
-  // genuinely carries the built-in low-back drawer.
+  // Determine effectiveInbuiltDrawers based on cabinet rules. GD keeps its existing built-in
+  // low-back drawer in addition to the shutter-faced high-back drawer. WBP has no built-in
+  // fascia drawer, but its 1HF shutter now carries one high-back drawer box.
   let effectiveInbuiltDrawers = inbuiltDrawers;
   if (fk === "GD") {
     effectiveInbuiltDrawers = "1lb";
@@ -1046,7 +1046,7 @@ function addDrawerBoxes(
   // front is actually a LOW box (short back + H90 hardware) — only the fascia is tall — so the
   // "High" pack takes the Low configuration (back height 63, LOW BACK DRAWER H90).
   const is2hb1bl = effectiveInbuiltDrawers === "2hb1bl";
-  const isAcc = fk === "BPO" || fk === "WBP";
+  const isAcc = fk === "BPO";
   if (!isAcc && supportedModel) {
     const spec = shutSpec(zk, fk, v, effectiveInbuiltDrawers);
     if (spec && spec.kind === "drawer" && spec.fronts) {
@@ -1057,7 +1057,10 @@ function addDrawerBoxes(
           if (is2hb1bl) {
             bump("High", 63, "HARDWARE PACK LOW BACK DRAWER H90 SET/1", null);
           } else {
-            bump("High", 212, "HARDWARE PACK HIGH BACK DRAWER H239 SET/1", null);
+            // Grain Drawer and Waste Bin use the same high-back pack, but their drawer-back
+            // panel is the special 350mm-high version requested for these two families only.
+            const highBackH = fk === "GD" || fk === "WBP" ? 350 : 212;
+            bump("High", highBackH, "HARDWARE PACK HIGH BACK DRAWER H239 SET/1", null);
           }
         }
       });
@@ -1115,11 +1118,15 @@ function addDrawerBoxes(
   for (const [variant, a] of Object.entries(agg)) {
     const n = a.count;
     const drawerPackName = `Drawer Pack- Cab Drawer Box ${variant}`;
+    // Only the high-back pack in Grain Drawer / Waste Bin gets the wider back panel.
+    // The drawer bottom remains on the existing W-50 × D-77 calculation.
+    const isGrainOrWasteHigh = variant === "High" && (fk === "GD" || fk === "WBP");
+    const drawerBackW = isGrainOrWasteHigh ? backW + 22 : backW;
 
     // Back panel — keeps Part/drill (JD) sub-level
     panels.push({
-      name: `Panels- Cab Drawer Box Back ${variant} ${backW}x${a.backH}x15`,
-      w: backW,
+      name: `Panels- Cab Drawer Box Back ${variant} ${drawerBackW}x${a.backH}x15`,
+      w: drawerBackW,
       h: a.backH,
       qty: 1 * n,
       drill: "JD",
@@ -1260,7 +1267,9 @@ function buildShutters(
       if (fk === "BPO") tc = "BPO";
       if (fk === "WBP") tc = "WBP";
       
-      const isAcc = fk === "BPO" || fk === "WBP";
+      // Bottle Pullout remains accessory-only. Waste Bin now has a real high-back drawer
+      // box, so its shutter must carry the matching H239 runner hardware like Grain Drawer.
+      const isAcc = fk === "BPO";
       // 2HB+1BL: the box behind each high front is a LOW box, so its shutter carries the LOW BACK
       // (H90) drawer hardware, not the high-back H239. (Matches the Drawer Pack's Low config.)
       const hinge = isAcc ? "" : (inbuiltDrawers === "2hb1bl" && fr.hb
@@ -1956,7 +1965,10 @@ function buildCarcassInnerRaw(
           });
         }
       } else {
-        pkRows.push(["panel", `Panels- Cab Shelf${lowSh}`, `${shelfW}×${shD}×${t}`, shelves, "Pcs"]);
+        // REF shelves must both be direct cabinet-BOM rows. Using the full 511mm shelf name
+        // here avoids the generic "Panels- Cab Shelf" prefix becoming an extra parent wrapper.
+        const shelfRowName = isRef ? shelfPk : `Panels- Cab Shelf${lowSh}`;
+        pkRows.push(["panel", shelfRowName, `${shelfW}×${shD}×${t}`, shelves, "Pcs"]);
         panels.push({ name: shelfPk, w: shelfW, h: shD, qty: shelves, drill: null, pack: shelfPk });
 
         if (shelves > 0) {
@@ -2168,7 +2180,10 @@ function buildCarcassInnerRaw(
     // stepper) is 1055mm. Every other wall family stays at H − 15 (= 1070 at 1085).
     const cH = isWDR ? H - 30 : H - 15;
     const sideH = cH;
-    const sd = isWDR ? D : D - 15;
+    // The nominal wall depth remains 336 in the cabinet selector/code, while every physical
+    // dish-rack depth is reduced by 8mm (336 -> 328) in its BOM.
+    const cabinetD = isWDR ? D - 8 : D;
+    const sd = isWDR ? cabinetD : cabinetD - 15;
     const bw = W - 2 * t - 2 * STEP;
     const bh = cH - 2 * t - 2 * STEP;
     const tbw = W - 2 * t;
@@ -2217,12 +2232,13 @@ function buildCarcassInnerRaw(
     const code = [z.p1, f.p2, handleToken, matToken, p3Code, p4w, p5, W, H, D, t].join("-") + (mat && mat !== "(none)" ? "-" + mat : "");
     const sidePk = `Set of Parts- Cab Standard Wall LH(${lh})+RH(${rh}) ${sd}x${sideH}x${t}`;
     const tbPk = isWDR
-      ? `Set of Parts- Cab Standard Wall TP(JD) ${tbw}x${D}x${t}`
-      : `Set of Parts- Cab Standard Wall TP(JD)+BT(JD) ${tbw}x${D}x${t}`;
+      ? `Set of Parts- Cab Standard Wall TP(JD) ${tbw}x${cabinetD}x${t}`
+      : `Set of Parts- Cab Standard Wall TP(JD)+BT(JD) ${tbw}x${cabinetD}x${t}`;
     const backPk = `Set of Parts- Cab Standard Wall Back Wall (Prof) ${bw}x${bh}x${t}`;
     const gw = W - 36;
-    // Glass/stone shelf depth: Dish Rack (WDR) → D - 39, any other wall family → D - 49.
-    const gd = D - (isWDR ? 39 : 49);
+    // Glass/stone shelf depth: Dish Rack (WDR) → effective cabinet depth - 39,
+    // any other wall family → cabinet depth - 49.
+    const gd = cabinetD - (isWDR ? 39 : 49);
     const pkRows: Array<[string, string, string, number, string]> = [];
     const panels: Panel[] = [];
     const profiles: Profile[] = [];
@@ -2233,17 +2249,17 @@ function buildCarcassInnerRaw(
     panels.push({ name: `Panels- Cab Wall LH/RH ${sd}x${sideH}x${t}`, w: sd, h: sideH, qty: 2, drill: `${lh} / ${rh}`, pack: sidePk });
 
     if (isWDR) {
-      pkRows.push(["panel", "Set of Parts- Cab Standard Wall TP(JD)", `${tbw}×${D}×${t}`, 1, "Set"]);
-      panels.push({ name: `Panels- Cab Wall TP ${tbw}x${D}x${t}`, w: tbw, h: D, qty: 1, drill: "JD", pack: tbPk });
+      pkRows.push(["panel", "Set of Parts- Cab Standard Wall TP(JD)", `${tbw}×${cabinetD}×${t}`, 1, "Set"]);
+      panels.push({ name: `Panels- Cab Wall TP ${tbw}x${cabinetD}x${t}`, w: tbw, h: cabinetD, qty: 1, drill: "JD", pack: tbPk });
 
       const sinkPk = "Sink Profile Frame (HM510)";
       // The sink top is an ALUMINIUM FRAME part: one "Part - Cab Top …" item whose children are the
       // TP/BT and LH/RH profile sets (each set holding its cut piece over the raw 3-mtr stock).
-      const sinkPartName = `Part - Cab Top ${W}x${D}x${t} Alu Frame HM-510`;
-      pkRows.push(["sink_frame", sinkPartName, `${W}×${D}×${t}`, 1, "Set"]);
+      const sinkPartName = `Part - Cab Top ${W}x${cabinetD}x${t} Alu Frame HM-510`;
+      pkRows.push(["sink_frame", sinkPartName, `${W}×${cabinetD}×${t}`, 1, "Set"]);
       pkRows.push(["hard", "CORNER BRACKET FOR GLASS SHUTTER 62X62X GSP-CBM EBC", "—", 1, "Set"]);
       profiles.push({ name: "Prof Sink Frame (SINK) TP/BT", len: W, qty: 2, type: "SINK", pack: sinkPartName });
-      profiles.push({ name: "Prof Sink Frame (SINK) LH/RH", len: D, qty: 2, type: "SINK", pack: sinkPartName });
+      profiles.push({ name: "Prof Sink Frame (SINK) LH/RH", len: cabinetD, qty: 2, type: "SINK", pack: sinkPartName });
       hardware.push({ name: "CORNER BRACKET FOR GLASS SHUTTER 62X62X GSP-CBM EBC", qty: 1, pack: sinkPk });
     } else {
       pkRows.push(["panel", "Set of Parts- Cab Standard Wall TP(JD)+BT(JD)", `${tbw}×${D}×${t}`, 1, "Set"]);
@@ -2289,7 +2305,7 @@ function buildCarcassInnerRaw(
     pkRows.push(["hard", carcassFixPack, "small (wall)", 1, "Set"]);
     hardware.push({ name: carcassFixPack, qty: 1, pack: carcassFixPack });
     const backPerim = 2 * (bw + bh);
-    const glue = Math.round(((4 * D + backPerim) / 1000) * 15);
+    const glue = Math.round(((4 * cabinetD + backPerim) / 1000) * 15);
     // Loose assembly glue removed — the GLUE SILICONE is already included in the HPL carcass-fixing pack.
 
     let netSqft = 0;
