@@ -2359,7 +2359,11 @@ function buildCarcassInnerRaw(
       ? "TP(LEM L)+BT(LEM L+LEG)"
       : "TP(LEM R)+BT(LEM R+LEG)"
     : "TP(JD)+BT(LEG)";
-  const topDepTxt = isCJ ? D - CJ_CUT + "-" + D : String(D);
+  // Base Blind cabinets keep their top and bottom at the same full cabinet depth,
+  // including when a CJ handle is selected. The D-23 CJ top rule is only for
+  // non-blind base cabinets.
+  const useReducedCjTop = isCJ && !z.blind;
+  const topDepTxt = useReducedCjTop ? D - CJ_CUT + "-" + D : String(D);
   // BC + DW + 3-drawer with "2HB + 1BL" inbuilt selection only relabels the code (boxes unchanged).
   const isInbuilt2hb1bl = z.p1 === "BC" && fk === "DW" && v.id === "3dr" && inbuiltDrawers === "2hb1bl";
   const codeP3 = isInbuilt2hb1bl ? "2HB" : v.p3;
@@ -2390,7 +2394,7 @@ function buildCarcassInnerRaw(
     pkRows.push(["panel", "Part Cab Common BT LEG", `${W}×${D}×${t}`, 1, "Pcs"]);
     panels.push({ name: `Panels- Cab Bottom ${W}x${D}x${t}`, w: W, h: D, qty: 1, drill: "Leg holes", pack: btFramePk });
   } else {
-    const td = isCJ ? D - CJ_CUT : D;
+    const td = useReducedCjTop ? D - CJ_CUT : D;
     pkRows.push(["panel", `Set of Parts- Cab ${sn} Base${lowT} ${tpbtC}`, `${W}×${topDepTxt}×${t}`, 1, "Set"]);
     panels.push({
       name: `Panels- Cab Top${isCJ ? " CJ" : ""} ${W}x${td}x${t}`,
