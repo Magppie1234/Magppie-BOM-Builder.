@@ -295,6 +295,7 @@ function extractSideType(name: string): string {
 
 function extractProfileCode(itemName: string): string {
   const upper = itemName.toUpperCase();
+  if (upper.includes("CENTER STRIP") || upper.includes("(CTR)")) return "CTR";
   if (upper.includes("SLF") || upper.includes("HM-511") || upper.includes("HM511")) return "SLF";
   if (upper.includes("STP") || upper.includes("HM-509") || upper.includes("HM509")) return "STP";
   if (upper.includes("SINK") || upper.includes("HM-510") || upper.includes("HM510")) return "SINK";

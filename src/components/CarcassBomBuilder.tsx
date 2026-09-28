@@ -1115,6 +1115,13 @@ function addDrawerBoxes(
   const bottomW = W - 50;
   const bottomD = D - 77;
   const faciaW = W - 2 * t - 8;
+  // HM517 center strips normally follow the physical drawer count. The standard
+  // 3-drawer 2LB+1HB layout is the sole exception: it uses two strips total.
+  const is2lb1hb = v?.p3 === "2LB" && v?.p4 === "1HB" && effectiveInbuiltDrawers !== "2hb1bl";
+  let remainingCenterStrips = is2lb1hb
+    ? 2
+    : Object.values(agg).reduce((sum, drawer) => sum + drawer.count, 0);
+  const centerStripLen = Math.max(0, (W - 3) - 90); // actual shutter width (W-3) minus 90mm
   for (const [variant, a] of Object.entries(agg)) {
     const n = a.count;
     const drawerPackName = `Drawer Pack- Cab Drawer Box ${variant}`;
@@ -1181,6 +1188,20 @@ function addDrawerBoxes(
       type: "DBC",
       pack: drawerPackName
     });
+
+    // One HM517 center strip per drawer, except 2LB+1HB which is capped at two strips.
+    // Allocate strips across the aggregate drawer packs without changing HM535 quantities.
+    const centerStripQty = Math.min(n, remainingCenterStrips);
+    if (centerStripQty > 0) {
+      profiles.push({
+        name: `ALU PROF CENTER STRIP (HM517) MID`,
+        len: centerStripLen,
+        qty: centerStripQty,
+        type: "CTR",
+        pack: drawerPackName
+      });
+      remainingCenterStrips -= centerStripQty;
+    }
 
     // Drawer-runner hardware pack. Shutter-faced drawers already carry this pack on their shutter
     // (buildShutters `hinge`), so emitting it here too duplicates the Zoho item — only the built-in
@@ -2825,6 +2846,7 @@ function aggregatePackList(arr: string[]): Array<{ pk: string; qty: number }> {
 
 function extractProfileCode(itemName: string): string {
   const upper = itemName.toUpperCase();
+  if (upper.includes("CENTER STRIP") || upper.includes("(CTR)")) return "CTR";
   if (upper.includes("SLF") || upper.includes("HM-511") || upper.includes("HM511")) return "SLF";
   if (upper.includes("STP") || upper.includes("HM-509") || upper.includes("HM509")) return "STP";
   if (upper.includes("SINK") || upper.includes("HM-510") || upper.includes("HM510")) return "SINK";
@@ -3640,8 +3662,9 @@ function buildFullBomData(
 
       // Drawer Box pack — single composite (Level 1 qty = drawer count). Children carry
       // per-drawer consumption: back panel keeps its Part/JD drill, bottom panel is flat,
-      // side profile DBS keeps the Set of Profile Parts (LH/RH) wrapper, center profile DBC
-      // is flat like the bottom panel, and the runner hardware sits flat under the pack.
+      // side profile DBS keeps the Set of Profile Parts (LH/RH) wrapper; drawer-bottom DBC
+      // and HM517 center-strip CTR profiles are flat like the bottom panel; runner hardware
+      // sits flat under the pack.
       if (pkType === "panel" && name.startsWith("Drawer Pack- Cab Drawer Box")) {
         const dCount = getDrawerCount(name, m.panels) || 1;
         const qN = q * dCount; // makes profile children explode to per-drawer × drawer count
@@ -3681,13 +3704,13 @@ function buildFullBomData(
         const drawerProfFinish = m.carcassProfileColor || cFinish;
         findProfilesForPk(name).forEach((p) => {
           const perDrawerQty = +(p.qty / dCount).toFixed(3);
-          if (p.type === "DBC") {
+          if (p.type === "DBC" || p.type === "CTR") {
             const items: FullBomRow[] = [];
-            // #11: name the DBC cut piece with its size (+ finish) so different lengths (e.g. 522 vs
-            // 822) are DISTINCT SKUs in the Opti sheet — same rule as every other profile.
-            const dbcName = `${p.name} ${p.len}mm ${drawerProfFinish}`;
+            // Name each flat cut piece with its size (+ finish) so different lengths are
+            // distinct SKUs in the Opti sheet.
+            const flatProfileName = `${p.name} ${p.len}mm ${drawerProfFinish}`;
             addProfilePanelAndRawRow(
-              so, "Carcass", 2, dbcName, skuSuffix, p.len, perDrawerQty,
+              so, "Carcass", 2, flatProfileName, skuSuffix, p.len, perDrawerQty,
               drawerProfFinish, name, stockMap, p.type, selectedRawIds, rawOptionsMap, qN, items
             );
             rows.push(...items);
@@ -6500,7 +6523,7 @@ async function findExistingCompositeByRawMaterial(rawMaterialId: string, itemNam
   return null;
 }
 
-const NO_DRILL_PROFILES = new Set(["STP", "ELEN", "SLF", "SINK"]);
+const NO_DRILL_PROFILES = new Set(["STP", "ELEN", "SLF", "SINK", "CTR"]);
 
 async function resolveProfileBOM(
   profileCode: string,
@@ -8019,8 +8042,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                   rawProfileId = await resolveSimpleItem(itemName, false, { group: "Aluminium Profile & Parts", finish: pFinish }, "Mtr");
                 }
 
-                if (pType === "DBC") {
-                  // Center profile (HM535) — flat cut profile (raw + cutting), no set wrapper
+                if (pType === "DBC" || pType === "CTR") {
+                  // HM535 drawer-bottom center and HM517 center-strip profiles are flat cut
+                  // profiles (raw + cutting), with no set wrapper.
                   for (const p of profsList) {
                     const cutBase = `${p.name} ${p.len}mm ${pFinish}`;
                     let cutId: string;
