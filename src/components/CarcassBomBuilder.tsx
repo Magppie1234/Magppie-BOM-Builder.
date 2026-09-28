@@ -2220,9 +2220,9 @@ function buildCarcassInnerRaw(
     const cH = isDishRackLayout ? H - 30 : H - 15;
     const sideH = cH;
     // Dish Rack / ROGY side panels and stone top keep the full 336mm cabinet depth.
-    // Only their aluminium bottom frame is reduced by 8mm (336 -> 328).
+    // Only their aluminium bottom frame is reduced by 6mm (336 -> 330).
     const cabinetD = D;
-    const frameD = isDishRackLayout ? D - 8 : D;
+    const frameD = isDishRackLayout ? D - 6 : D;
     const sd = isDishRackLayout ? D : D - 15;
     const bw = W - 2 * t - 2 * STEP;
     const bh = cH - 2 * t - 2 * STEP;
