@@ -310,6 +310,9 @@ interface CarcassModel {
   tipOn?: string;
   appliance1Height?: number;
   appliance2Height?: number;
+  // Nominal opening width for blind cabinets. The manufactured opening shutter and
+  // fixed panel each retain the existing 3mm clearance deduction.
+  blindNominalWidth?: number;
   // Wall stone/glass shutter cabinets: glass shelves emitted as a DIRECT raw material
   // (not a stone-panel BOM). Size mirrors the legacy stone shelf; qty derives from height.
   glassShelf?: { name: string; w: number; d: number; t: number; qty: number };
@@ -734,6 +737,14 @@ const WALL_FAMILIES: Record<string, any> = {
       { id: "dbl", label: "Double door", p3: "2SG", p4: "2HS", both: true, side: "2S 4H", handle: "DSH" },
     ],
   },
+  GRO: {
+    name: "Wall ROGY",
+    p2: "GRO",
+    variants: [
+      { id: "sgl", label: "Single door (handed)", p3: "XXX", handed: true, act: "XXX 4H", oth: "XXX JD", handle: "DSH" },
+      { id: "dbl", label: "Double door", p3: "XXX", p4: "2HS", both: true, side: "XXX 4H", handle: "DSH" },
+    ],
+  },
 };
 
 const TALL_FAMILIES: Record<string, any> = {
@@ -863,6 +874,7 @@ const SIZES: Record<string, { w: number[]; h: number[]; d: number }> = {
   "WC.WGL": { w: [450, 500, 550, 600, 850, 900], h: [1085, 725], d: 336 },
   "WC.WST": { w: [450, 500, 550, 600, 850, 900], h: [1085, 725], d: 336 },
   "WC.WDR": { w: [600, 900], h: [1085, 725], d: 336 },
+  "WC.GRO": { w: [600, 900], h: [1085, 725], d: 336 },
   "WC.WOP": { w: [300], h: [1085, 725], d: 336 },
 
   "WB.WGL": { w: [900], h: [1085, 725], d: 336 },
@@ -965,7 +977,7 @@ function shutSpec(zk: string, fk: string, v: any, inbuiltDrawers: string = "none
   if (Z.tall && fk === "APP") {
     return { kind: "drawer", upperDoor: true, fronts: v.p4 === "2HB" ? [{ loc: "UH", hb: 1 }, { loc: "BH", hb: 1 }] : [{ loc: "BH", hb: 1 }] };
   }
-  if (["SK", "SH", "WGL", "WST", "WDR", "SHF", "SHFG", "PAN", "DPN", "DPNG", "PPN", "PPNG", "REF", "BLND", "BLNG", "LOWS", "LOWSG", "LST", "LGL"].includes(fk)) return { kind: "hinged" };
+  if (["SK", "SH", "WGL", "WST", "WDR", "GRO", "SHF", "SHFG", "PAN", "DPN", "DPNG", "PPN", "PPNG", "REF", "BLND", "BLNG", "LOWS", "LOWSG", "LST", "LGL"].includes(fk)) return { kind: "hinged" };
   return { kind: "none" };
 }
 
@@ -1242,7 +1254,8 @@ function buildShutters(
   hand: string,
   inbuiltDrawers: string = "none",
   appliance1Height: number = 600,
-  appliance2Height: number = 400
+  appliance2Height: number = 400,
+  blindNominalWidth?: number
 ): Shutter[] {
   const Z = ZONES[zk];
   if (!design) return [];
@@ -1352,9 +1365,13 @@ function buildShutters(
       return out;
     }
     if (spec.blindW) {
+      const minBlindWidth = Z.kind === "wall" || Z.kind === "loft" ? 400 : 500;
+      const maxBlindWidth = Math.max(minBlindWidth, W - 4);
+      const defaultBlindWidth = Math.max(minBlindWidth, Math.round(W / 2));
+      const blindW = Math.min(maxBlindWidth, Math.max(minBlindWidth, blindNominalWidth ?? defaultBlindWidth));
       const ded = shDeduct(isBase, design, "RH");
       const h = H - ded;
-      const dw1 = spec.blindW - 3;
+      const dw1 = blindW - 3;
       const loc1 = hand === "RHS" ? "R" : "L";
       out.push({
         code: `SH-${handleSeg}-${matSeg}-${zp}SH-${W}x${H}-${loc1}-${dw1}-${h}-${frame}-${shThk}-${design}`,
@@ -1370,7 +1387,7 @@ function buildShutters(
         hq: 1,
         loc: loc1,
       });
-      const rem = W - spec.blindW;
+      const rem = W - blindW;
       if (rem > 0) {
         const dw2 = rem - 3;
         const h2 = H - 3;
@@ -2196,15 +2213,16 @@ function buildCarcassInnerRaw(
 
   if (z.kind === "wall") {
     const isWDR = fk === "WDR";
-    // Dish Rack carcass is reduced a further 15mm (vs. the standard 15mm) to fit the
-    // aluminium sink profile: at H=1085 the whole WDR carcass (LH/RH sides, back wall,
-    // stepper) is 1055mm. Every other wall family stays at H − 15 (= 1070 at 1085).
-    const cH = isWDR ? H - 30 : H - 15;
+    const isDishRackLayout = isWDR || fk === "GRO";
+    // Dish Rack and Wall ROGY share the reduced carcass height used by the HM-510
+    // bottom frame. Every other wall family stays at H-15.
+    const cH = isDishRackLayout ? H - 30 : H - 15;
     const sideH = cH;
-    // The nominal wall depth remains 336 in the cabinet selector/code, while every physical
-    // dish-rack depth is reduced by 8mm (336 -> 328) in its BOM.
-    const cabinetD = isWDR ? D - 8 : D;
-    const sd = isWDR ? cabinetD : cabinetD - 15;
+    // Dish Rack / ROGY side panels and stone top keep the full 336mm cabinet depth.
+    // Only their aluminium bottom frame is reduced by 8mm (336 -> 328).
+    const cabinetD = D;
+    const frameD = isDishRackLayout ? D - 8 : D;
+    const sd = isDishRackLayout ? D : D - 15;
     const bw = W - 2 * t - 2 * STEP;
     const bh = cH - 2 * t - 2 * STEP;
     const tbw = W - 2 * t;
@@ -2226,7 +2244,8 @@ function buildCarcassInnerRaw(
     // than the static family default:
     //   WGL / WST / WOP  →  1085 → 3 shelves, 720 → 1 shelf
     //   WDR (dish rack)  →  1085 → 2 shelves, 720 → 0 shelves (no shelf; p3 → XXX)
-    const isWallShelfFam = fk === "WGL" || fk === "WST" || fk === "WOP" || fk === "WDR";
+    //   GRO (Wall ROGY)  →  always 0 shelves
+    const isWallShelfFam = fk === "WGL" || fk === "WST" || fk === "WOP" || fk === "WDR" || fk === "GRO";
     const wallShelfQty = isWDR
       ? (H >= 1085 ? 2 : 0)
       : (fk === "WGL" || fk === "WST" || fk === "WOP") ? (H >= 1085 ? 3 : 1) : 0;
@@ -2252,7 +2271,7 @@ function buildCarcassInnerRaw(
     // material token: WGL → "GL", WST (and other wall fams) → "ST".
     const code = [z.p1, f.p2, handleToken, matToken, p3Code, p4w, p5, W, H, D, t].join("-") + (mat && mat !== "(none)" ? "-" + mat : "");
     const sidePk = `Set of Parts- Cab Standard Wall LH(${lh})+RH(${rh}) ${sd}x${sideH}x${t}`;
-    const tbPk = isWDR
+    const tbPk = isDishRackLayout
       ? `Set of Parts- Cab Standard Wall TP(JD) ${tbw}x${cabinetD}x${t}`
       : `Set of Parts- Cab Standard Wall TP(JD)+BT(JD) ${tbw}x${cabinetD}x${t}`;
     const backPk = `Set of Parts- Cab Standard Wall Back Wall (Prof) ${bw}x${bh}x${t}`;
@@ -2269,18 +2288,17 @@ function buildCarcassInnerRaw(
     pkRows.push(["panel", `Set of Parts- Cab Standard Wall LH(${lh})+RH(${rh})`, `${sd}×${sideH}×${t}`, 1, "Set"]);
     panels.push({ name: `Panels- Cab Wall LH/RH ${sd}x${sideH}x${t}`, w: sd, h: sideH, qty: 2, drill: `${lh} / ${rh}`, pack: sidePk });
 
-    if (isWDR) {
+    if (isDishRackLayout) {
       pkRows.push(["panel", "Set of Parts- Cab Standard Wall TP(JD)", `${tbw}×${cabinetD}×${t}`, 1, "Set"]);
       panels.push({ name: `Panels- Cab Wall TP ${tbw}x${cabinetD}x${t}`, w: tbw, h: cabinetD, qty: 1, drill: "JD", pack: tbPk });
 
       const sinkPk = "Sink Profile Frame (HM510)";
-      // The sink top is an ALUMINIUM FRAME part: one "Part - Cab Top …" item whose children are the
-      // TP/BT and LH/RH profile sets (each set holding its cut piece over the raw 3-mtr stock).
-      const sinkPartName = `Part - Cab Top ${W}x${cabinetD}x${t} Alu Frame HM-510`;
-      pkRows.push(["sink_frame", sinkPartName, `${W}×${cabinetD}×${t}`, 1, "Set"]);
+      // HM-510 is the BOTTOM frame. The full-depth stone panel above remains the cabinet top.
+      const sinkPartName = `Part - Cab Bottom ${W}x${frameD}x${t} Alu Frame HM-510`;
+      pkRows.push(["sink_frame", sinkPartName, `${W}×${frameD}×${t}`, 1, "Set"]);
       pkRows.push(["hard", "CORNER BRACKET FOR GLASS SHUTTER 62X62X GSP-CBM EBC", "—", 1, "Set"]);
       profiles.push({ name: "Prof Sink Frame (SINK) TP/BT", len: W, qty: 2, type: "SINK", pack: sinkPartName });
-      profiles.push({ name: "Prof Sink Frame (SINK) LH/RH", len: cabinetD, qty: 2, type: "SINK", pack: sinkPartName });
+      profiles.push({ name: "Prof Sink Frame (SINK) LH/RH", len: frameD, qty: 2, type: "SINK", pack: sinkPartName });
       hardware.push({ name: "CORNER BRACKET FOR GLASS SHUTTER 62X62X GSP-CBM EBC", qty: 1, pack: sinkPk });
     } else {
       pkRows.push(["panel", "Set of Parts- Cab Standard Wall TP(JD)+BT(JD)", `${tbw}×${D}×${t}`, 1, "Set"]);
@@ -2531,7 +2549,8 @@ function buildModel(
   fixedPanelMat: string = "",
   tipOn: string = "",
   appliance1Height: number = 600,
-  appliance2Height: number = 400
+  appliance2Height: number = 400,
+  blindNominalWidth?: number
 ): CarcassModel {
   const matSuffix = carcassMat === shutterMat || !shutterMat ? carcassMat : `${carcassMat}-${shutterMat}`;
   const m = buildCarcassInner(zk, fk, v, handle, W, H, D, t, matSuffix, hand, drawerModel, inbuiltDrawers, tipOn);
@@ -2549,12 +2568,17 @@ function buildModel(
   m.tipOn = tipOn;
   m.appliance1Height = appliance1Height;
   m.appliance2Height = appliance2Height;
+  if (ZONES[zk]?.blind) {
+    const blindMin = ZONES[zk]?.kind === "wall" || ZONES[zk]?.kind === "loft" ? 400 : 500;
+    const blindMax = Math.max(blindMin, W - 4);
+    m.blindNominalWidth = Math.min(blindMax, Math.max(blindMin, blindNominalWidth ?? Math.max(blindMin, Math.round(W / 2))));
+  }
   m.mat = carcassMat; // fallback
   // Every cabinet carries 4 cabinet connectors (fitted on site).
   m.hardware.push({ name: "CABINET CONNECTOR 30X10X SS304 CNS-30S EBC", qty: 4, uom: "PCS", pack: "CABINET CONNECTOR 30X10X SS304 CNS-30S EBC" });
   // Every cabinet carries 8 hole cover caps.
   m.hardware.push({ name: "HOLE COVER CAP WHITE 18MM MFC1-WH EBC", qty: 8, uom: "PCS", pack: "HOLE COVER CAP WHITE 18MM MFC1-WH EBC" });
-  m.shutters = buildShutters(zk, fk, v, design, handle, W, H, hand, inbuiltDrawers, appliance1Height, appliance2Height);
+  m.shutters = buildShutters(zk, fk, v, design, handle, W, H, hand, inbuiltDrawers, appliance1Height, appliance2Height, m.blindNominalWidth);
   m.shutters.forEach((s) => {
     // The fixed (dummy) panel of a blind cabinet is always a stone 6mm panel, even in a
     // glass-shutter family — so glass treatment is per-shutter, never on the fixed panel.
@@ -2900,6 +2924,37 @@ function getRawMaterialNameAndSku(
     };
   }
   return { name: selectedId, sku: "-", stock: 0 };
+}
+
+function selectedStoneIs1200x600(
+  rawKey: string,
+  selectedRawIds: Record<string, string>,
+  rawOptionsMap: Record<string, any[]>
+): boolean {
+  const selectedId = selectedRawIds[rawKey];
+  if (!selectedId) return false;
+  const item = (rawOptionsMap[rawKey] || []).find((candidate: any) =>
+    candidate.item_id === selectedId || candidate.sku === selectedId
+  );
+  const field = (apiName: string): string => {
+    if (item?.[apiName] !== undefined && item?.[apiName] !== null && item?.[apiName] !== "") {
+      return String(item[apiName]);
+    }
+    const custom = (item?.custom_fields || []).find((entry: any) => entry.api_name === apiName);
+    return custom ? String(custom.value || "") : "";
+  };
+  const h = parseFloat(field("cf_height")) || 0;
+  const w = parseFloat(field("cf_width")) || 0;
+  if ((h === 1200 && w === 600) || (h === 600 && w === 1200)) return true;
+
+  const searchable = selectedId.startsWith("MOCK_CREATE|")
+    ? selectedId.split("|").slice(1).join("|")
+    : `${item?.name || item?.item_name || ""} ${item?.sku || ""}`;
+  return /(?:^|\D)1200\s*[xX×]\s*600(?:\D|$)|(?:^|\D)600\s*[xX×]\s*1200(?:\D|$)/.test(searchable);
+}
+
+function splitStonePanelHeight(fullPanelHeight: number): number {
+  return Math.max(0, fullPanelHeight / 2 - 2);
 }
 
 function classifyRowType(pkType: string): string {
@@ -3950,7 +4005,7 @@ function buildFullBomData(
         }
       }
 
-      // Sink ALU frame — the "Part - Cab Top … Alu Frame HM-510" pack (Level 1) holds the TP/BT and
+      // HM-510 ALU frame — the "Part - Cab Bottom … Alu Frame HM-510" pack (Level 1) holds the TP/BT and
       // LH/RH profile SETS (Level 2), each with its cut piece (Level 3) over the raw stock (Level 4).
       // buildProfileBomRows already emits its sets at Level 2, so no level shift is needed here.
       if (pkType === "sink_frame") {
@@ -4232,11 +4287,15 @@ function buildFullBomData(
           String(s.ph), String(s.pw), "", "5",
           glassColor, partsShName, 1, 0, +(1 * q).toFixed(3), "pcs", stockMap, "plain"));
       } else {
-        const panelName = `Panels- SH ${s.pw}x${s.ph}x${shStoneThk} ${s.design}`;
+        const stoneKey = `shutter|${shFinish}|${shStoneThk}`;
+        const splitFor1200Stone = s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap);
+        const panelHeight = splitFor1200Stone ? splitStonePanelHeight(s.ph) : s.ph;
+        const panelQty = splitFor1200Stone ? 2 : 1;
+        const panelName = `Panels- SH ${s.pw}x${panelHeight}x${shStoneThk} ${s.design}`;
         addPanelRow(so, "Shutter", "Panels- SH", 3,
           panelName, panelName + skuSuffix, "component",
-          String(s.ph), String(s.pw), "", shStoneThk,
-          shFinish, partsShName, 1, 0, +(1 * q).toFixed(3), "pcs", stockMap, "component",
+          String(panelHeight), String(s.pw), "", shStoneThk,
+          shFinish, partsShName, panelQty, 0, +(panelQty * q).toFixed(3), "pcs", stockMap, "component",
           rows, selectedRawIds, rawOptionsMap);
       }
 
@@ -4405,12 +4464,17 @@ function buildFullBomData(
       String(ph), String(pw), "", vpThk,
       finish, vpCode, 1, 0, q, "pcs", stockMap, "sub_bom"));
 
-    // Level 3: Shutter Panel (under Parts- SH)
-    const panelName = `Panels- SH ${pw}x${ph}x${vpThk} ${mainProfile}`;
+    // Level 3: Shutter Panel (under Parts- SH). A selected 1200x600 stone splits any
+    // visible panel taller than 1200mm into exactly two equal pieces, minus 2mm per piece.
+    const vpStoneKey = `shutter|${finish}|${vpThk}`;
+    const splitFor1200Stone = H > 1200 && selectedStoneIs1200x600(vpStoneKey, selectedRawIds, rawOptionsMap);
+    const visiblePanelHeight = splitFor1200Stone ? splitStonePanelHeight(ph) : ph;
+    const visiblePanelQty = splitFor1200Stone ? 2 : 1;
+    const panelName = `Panels- SH ${pw}x${visiblePanelHeight}x${vpThk} ${mainProfile}`;
     addPanelRow(so, "Shutter", "Panels- SH", 3,
       panelName, panelName + skuSuffix, "component",
-      String(ph), String(pw), "", vpThk,
-      finish, vpPartsShName, 1, 0, q, "pcs", stockMap, "component",
+      String(visiblePanelHeight), String(pw), "", vpThk,
+      finish, vpPartsShName, visiblePanelQty, 0, visiblePanelQty * q, "pcs", stockMap, "component",
       rows, selectedRawIds, rawOptionsMap);
 
     // Level 3+: Shutter Profiles (sets shifted down by 1 to sit under Parts- SH)
@@ -7114,6 +7178,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const [elevation, setElevation] = useState<string>("");
   const [appliance1Height, setAppliance1Height] = useState<number>(600);
   const [appliance2Height, setAppliance2Height] = useState<number>(400);
+  const [blindNominalWidth, setBlindNominalWidth] = useState<number | null>(null);
   const [editingLineIndex, setEditingLineIndex] = useState<number | null>(null);
 
   const [wSel, setWSel] = useState<string>("600");
@@ -7900,7 +7965,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
           ? (currentModel.fixedPanelMat || currentModel.shutterMat || shutterMat)
           : (currentModel.shutterMat || shutterMat);
         const shutterMatOfModel = stoneShutterFinish;
-        const shutterStoneByKey: Record<string, { id: string; slabArea: number }> = {};
+        const shutterStoneByKey: Record<string, { id: string; slabArea: number; is1200x600: boolean }> = {};
         if (currentModel.shutters && currentModel.shutters.length > 0) {
           for (const s of currentModel.shutters) {
             if (!isStoneShutter(s)) continue;
@@ -7913,7 +7978,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               throw new Error(`Shutter stone raw material not selected for finish "${sFin}" (${sThk}mm) in cabinet "${currentModel.code}". Please choose a raw material selection first.`);
             }
             const item = (rawOptionsMap[k] || []).find(i => i.item_id === id);
-            shutterStoneByKey[k] = { id, slabArea: item ? getSlabArea(item) : 0 };
+            shutterStoneByKey[k] = {
+              id,
+              slabArea: item ? getSlabArea(item) : 0,
+              is1200x600: selectedStoneIs1200x600(k, selectedRawIds, rawOptionsMap)
+            };
           }
         }
 
@@ -8367,11 +8436,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         if (currentModel.shutters && currentModel.shutters.length > 0) {
           // Check shutter raw material dedup against the first stone shutter (thickness-aware).
           const firstStone = currentModel.shutters.find((s) => isStoneShutter(s));
-          const firstStoneThk = firstStone ? shThkOf(firstStone.design, false) : 6;
+          const firstStoneThk = firstStone ? shutterStoneThk(stoneFinishOf(firstStone), firstStone.design) : 6;
           const firstStoneKey = firstStone ? `shutter|${stoneFinishOf(firstStone)}|${firstStoneThk}` : "";
           const firstStoneId = firstStone ? (shutterStoneByKey[firstStoneKey]?.id || "") : "";
+          const firstStonePanelH = firstStone && firstStone.h > 1200 && shutterStoneByKey[firstStoneKey]?.is1200x600
+            ? splitStonePanelHeight(firstStone.ph)
+            : firstStone?.ph;
           const shutterPanelSearchName = firstStone
-            ? `Panel Shutter ${firstStone.pw}x${firstStone.ph}x${firstStoneThk} ${stoneFinishOf(firstStone)}`
+            ? `Panel Shutter ${firstStone.pw}x${firstStonePanelH}x${firstStoneThk} ${stoneFinishOf(firstStone)}`
             : "";
           const existingShutterPanel = firstStoneId
             ? await findExistingCompositeByRawMaterial(firstStoneId, shutterPanelSearchName)
@@ -8387,10 +8459,13 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             const sStone = shutterStoneByKey[`shutter|${sFin}|${sThk}`];
             const shutterStoneId = sStone?.id || "";
             const shutterSlabArea = sStone?.slabArea || 0;
-            const shPanelBase = `Panel Shutter ${s.pw}x${s.ph}x${sThk} ${sFin}`;
+            const splitFor1200Stone = s.h > 1200 && !!sStone?.is1200x600;
+            const shPanelH = splitFor1200Stone ? splitStonePanelHeight(s.ph) : s.ph;
+            const shPanelQty = splitFor1200Stone ? 2 : 1;
+            const shPanelBase = `Panel Shutter ${s.pw}x${shPanelH}x${sThk} ${sFin}`;
             const shPanelCf: ItemCustomFields = {
               group: "Panels- SH", subGroup: zoneName, finish: sFin,
-              thickness: String(sThk), height: String(s.ph), width: String(s.pw)
+              thickness: String(sThk), height: String(shPanelH), width: String(s.pw)
             };
 
             let shPanelId: string;
@@ -8406,7 +8481,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                 } else {
                   const shPanelName = shPanelBase;
                   setZohoMessage(`Creating Shutter BOM Level 4 Panel: "${shPanelName}"...`);
-                  const shArea = sqft(s.pw, s.ph);
+                  const shArea = sqft(s.pw, shPanelH);
                   const reqShArea = shArea * (1 + STONE_WASTE);
                   const shStoneQty = shutterSlabArea > 0 ? reqShArea / shutterSlabArea : reqShArea;
                   const roundedShStoneQty = Math.round(shStoneQty * 10000) / 10000;
@@ -8418,7 +8493,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               } else {
                 const shPanelName = `${shutterSoPrefix} ${shPanelBase}`;
                 setZohoMessage(`Creating Shutter BOM Level 4 Panel: "${shPanelName}"...`);
-                const shArea = sqft(s.pw, s.ph);
+                const shArea = sqft(s.pw, shPanelH);
                 const reqShArea = shArea * (1 + STONE_WASTE);
                 const shStoneQty = shutterSlabArea > 0 ? reqShArea / shutterSlabArea : reqShArea;
                 const roundedShStoneQty = Math.round(shStoneQty * 10000) / 10000;
@@ -8428,7 +8503,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                 ], shPanelCf);
               }
             }
-            shutterParts.push({ item_id: shPanelId, quantity: 1 });
+            shutterParts.push({ item_id: shPanelId, quantity: shPanelQty });
 
             for (const piece of cl2BorderPieces(s)) {
               let borderId: string;
@@ -8818,10 +8893,13 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
   // Reset standard dimensions on sizes changes
   useEffect(() => {
-    if (standardSizes) {
+    // During project-line editing, editLine restores the saved custom dimensions and blind
+    // opening width; do not overwrite those values with catalogue defaults.
+    if (standardSizes && editingLineIndex === null) {
       setWSel(String(standardSizes.w[0] ?? "600"));
       setHSel(String(standardSizes.h[0] ?? "720"));
       setDSel(String(standardSizes.d));
+      setBlindNominalWidth(null);
     }
   }, [standardSizes]);
 
@@ -8865,6 +8943,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const finalW = useMemo(() => (wSel === "custom" ? customW : parseInt(wSel) || 600), [wSel, customW]);
   const finalH = useMemo(() => (hSel === "custom" ? customH : parseInt(hSel) || 720), [hSel, customH]);
   const finalD = useMemo(() => (dSel === "custom" ? customD : parseInt(dSel) || 560), [dSel, customD]);
+  const isBlindCabinet = !!ZONES[zone]?.blind;
+  const blindMinWidth = ZONES[zone]?.kind === "wall" || ZONES[zone]?.kind === "loft" ? 400 : 500;
+  const blindMaxWidth = Math.max(blindMinWidth, finalW - 4);
+  const defaultBlindNominalWidth = Math.min(blindMaxWidth, Math.max(blindMinWidth, Math.round(finalW / 2)));
+  const effectiveBlindNominalWidth = Math.min(
+    blindMaxWidth,
+    Math.max(blindMinWidth, blindNominalWidth ?? defaultBlindNominalWidth)
+  );
 
   // The family's "Double" configuration (Double door / Double bowl / ...), if any.
   const doubleVariantId = useMemo(() => {
@@ -8886,11 +8972,13 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
   const handleWidthSelect = (val: string) => {
     setWSel(val);
+    setBlindNominalWidth(null);
     if (val !== "custom") coupleWidthToVariant(parseInt(val) || 0);
   };
 
   const handleCustomWidth = (num: number) => {
     setCustomW(num);
+    setBlindNominalWidth(null);
     coupleWidthToVariant(num);
   };
 
@@ -8993,8 +9081,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     // selector then represents the fixed-panel stone shade (blind glass only).
     const effShutterMat = isGlassShutterSelected ? glassColor : shutterMat;
     const effFixedPanelMat = isBlindGlassSelected ? shutterMat : "";
-    return buildModel(zone, activeFamilyKey, currentVariant, handle, design, carcassMat, effShutterMat, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, effFixedPanelMat, ZONES[zone]?.kind === "loft" ? tipOn : "", appliance1Height, appliance2Height);
-  }, [zone, activeFamilyKey, currentVariant, handle, design, carcassMat, shutterMat, glassColor, isGlassShutterSelected, isBlindGlassSelected, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, tipOn, appliance1Height, appliance2Height]);
+    return buildModel(zone, activeFamilyKey, currentVariant, handle, design, carcassMat, effShutterMat, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, effFixedPanelMat, ZONES[zone]?.kind === "loft" ? tipOn : "", appliance1Height, appliance2Height, isBlindCabinet ? effectiveBlindNominalWidth : undefined);
+  }, [zone, activeFamilyKey, currentVariant, handle, design, carcassMat, shutterMat, glassColor, isGlassShutterSelected, isBlindGlassSelected, carcassProfileColor, shutterProfileColor, finalW, finalH, finalD, thickness, handed, drawerModel, inbuiltDrawers, tipOn, appliance1Height, appliance2Height, isBlindCabinet, effectiveBlindNominalWidth]);
 
   useEffect(() => {
     (window as any).__BOM_CONTEXT__ = {
@@ -9207,8 +9295,12 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               netSqft: 0,
             };
           }
+          const splitFor1200Stone = s.h > 1200 && selectedStoneIs1200x600(sKey, selectedRawIds, rawOptionsMap);
+          const mainPanelSqft = splitFor1200Stone
+            ? sqft(s.pw, splitStonePanelHeight(s.ph)) * 2
+            : sqft(s.pw, s.ph);
           const cl2ExtraSqft = cl2BorderPieces(s).reduce((sum, p) => sum + sqft(p.w, p.h) * p.qty, 0);
-          stones[sKey].netSqft += (sqft(s.pw, s.ph) + cl2ExtraSqft) * qty;
+          stones[sKey].netSqft += (mainPanelSqft + cl2ExtraSqft) * qty;
         });
       }
 
@@ -9354,11 +9446,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
       const pw = W - 5;
       const ph = H - 5;
-      const vpSqft = sqft(pw, ph) * q;
-
       const mainProfile = vp.profile.includes("MD3") ? "MD3" : "MD1";
       const vpThk = shThkOf(mainProfile, false);
       const sKey = `shutter|${finish}|${vpThk}`;
+      const splitFor1200Stone = H > 1200 && selectedStoneIs1200x600(sKey, selectedRawIds, rawOptionsMap);
+      const vpSqft = (splitFor1200Stone ? sqft(pw, splitStonePanelHeight(ph)) * 2 : sqft(pw, ph)) * q;
       if (!stones[sKey]) {
         stones[sKey] = { key: sKey, category: "shutter", finish, thickness: vpThk, netSqft: 0 };
       }
@@ -9528,7 +9620,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       profiles: Object.values(profiles),
       hardware: Object.values(hardwareMap),
     };
-  }, [activeItems, design, fillers, visiblePanels, backsplashes, countertops, otherAccRows, accessoryRows]);
+  }, [activeItems, design, fillers, visiblePanels, backsplashes, countertops, otherAccRows, accessoryRows, selectedRawIds, rawOptionsMap]);
 
   // Retry helper — clears error + options for a key so the effect re-fetches
   const retryRawFetch = (key: string) => {
@@ -9783,7 +9875,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         }
       });
       (m.shutters || []).forEach((s) => {
-        shSqft += sqft(s.pw, s.ph) * q;
+        const glassFace = isGlassShutterFam(m.fk) && s.kind !== "fixed";
+        const panelFinish = s.kind === "fixed"
+          ? (m.fixedPanelMat || m.shutterMat || m.mat || "STATUARIO")
+          : (m.shutterMat || m.mat || "STATUARIO");
+        const panelThk = shutterStoneThk(panelFinish, s.design);
+        const stoneKey = `shutter|${panelFinish}|${panelThk}`;
+        const splitFor1200Stone = !glassFace && s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap);
+        shSqft += (splitFor1200Stone ? sqft(s.pw, splitStonePanelHeight(s.ph)) * 2 : sqft(s.pw, s.ph)) * q;
         cl2BorderPieces(s).forEach((piece) => {
           shSqft += sqft(piece.w, piece.h) * piece.qty * q;
         });
@@ -9804,9 +9903,25 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       if (m.shutters && m.shutters.length > 0) {
         const shutterFinish = m.shutterMat || m.mat || "STATUARIO";
         if (!finAgg[shutterFinish]) finAgg[shutterFinish] = { sqft: 0, pan: 0 };
-        const unitShSqftVal = m.shutters.reduce((acc, s) => acc + sqft(s.pw, s.ph), 0);
+        const unitShSqftVal = m.shutters.reduce((acc, s) => {
+          const glassFace = isGlassShutterFam(m.fk) && s.kind !== "fixed";
+          const panelFinish = s.kind === "fixed"
+            ? (m.fixedPanelMat || m.shutterMat || m.mat || "STATUARIO")
+            : shutterFinish;
+          const stoneKey = `shutter|${panelFinish}|${shutterStoneThk(panelFinish, s.design)}`;
+          const splitFor1200Stone = !glassFace && s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap);
+          return acc + (splitFor1200Stone ? sqft(s.pw, splitStonePanelHeight(s.ph)) * 2 : sqft(s.pw, s.ph));
+        }, 0);
+        const unitShPanelCount = m.shutters.reduce((count, s) => {
+          const glassFace = isGlassShutterFam(m.fk) && s.kind !== "fixed";
+          const panelFinish = s.kind === "fixed"
+            ? (m.fixedPanelMat || m.shutterMat || m.mat || "STATUARIO")
+            : shutterFinish;
+          const stoneKey = `shutter|${panelFinish}|${shutterStoneThk(panelFinish, s.design)}`;
+          return count + (!glassFace && s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap) ? 2 : 1);
+        }, 0);
         finAgg[shutterFinish].sqft += unitShSqftVal * q;
-        finAgg[shutterFinish].pan += m.shutters.length * q;
+        finAgg[shutterFinish].pan += unitShPanelCount * q;
       }
     });
 
@@ -9849,9 +9964,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       
       const pw = W - 5;
       const ph = H - 5;
-      const fSqft = sqft(pw, ph) * q;
-      
       const mainProfile = vp.profile.includes("MD3") ? "MD3" : "MD1";
+      const vpThk = shThkOf(mainProfile, false);
+      const vpStoneKey = `shutter|${finish}|${vpThk}`;
+      const splitFor1200Stone = H > 1200 && selectedStoneIs1200x600(vpStoneKey, selectedRawIds, rawOptionsMap);
+      const fSqft = (splitFor1200Stone ? sqft(pw, splitStonePanelHeight(ph)) * 2 : sqft(pw, ph)) * q;
       const mainProfMm = 2 * H + 2 * W;
       const cmProfMm = vp.profile.includes("CM") ? 2 * Math.max(0, H - 100) + 2 * Math.max(0, W - 100) : 0;
       const fProf = ((mainProfMm + cmProfMm) / 1000) * q;
@@ -9862,7 +9979,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
       if (!finAgg[finish]) finAgg[finish] = { sqft: 0, pan: 0 };
       finAgg[finish].sqft += fSqft;
-      finAgg[finish].pan += q;
+      finAgg[finish].pan += (splitFor1200Stone ? 2 : 1) * q;
 
       profAgg[mainProfile] = (profAgg[mainProfile] || 0) + ((2 * H + 2 * W) / 1000) * q;
       if (vp.profile.includes("CM")) {
@@ -9891,7 +10008,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       finAgg,
       extraCons,
     };
-  }, [project, fillers, visiblePanels, shutterMat, design, shutterProfileColor]);
+  }, [project, fillers, visiblePanels, shutterMat, design, shutterProfileColor, selectedRawIds, rawOptionsMap]);
 
   // CSV Output
   const csvText = useMemo(() => {
@@ -9925,6 +10042,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     setDrawerModel(m.drawerModel || "Lian"); setInbuiltDrawers(m.inbuiltDrawers || "none"); setTipOn(m.tipOn || TIPON_OPTIONS[0]);
     setWSel("custom"); setHSel("custom"); setDSel("custom"); setCustomW(m.W); setCustomH(m.H); setCustomD(m.D); setThickness(m.t);
     setAppliance1Height(m.appliance1Height || 600); setAppliance2Height(m.appliance2Height || 400);
+    setBlindNominalWidth(m.blindNominalWidth ?? null);
     setLineQty(line.qty); setSoRate(line.rate || 0); setElevation(line.elevation || ""); setEditingLineIndex(idx);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -10632,7 +10750,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             <label>Zone <span className="hint">P1</span></label>
             <SearchableSelect
               value={zone}
-              onChange={setZone}
+              onChange={(value) => { setZone(value); setBlindNominalWidth(null); }}
               options={zoneOptions}
               placeholder="Search zone..."
             />
@@ -10716,6 +10834,23 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                   placeholder="Search hand..."
                 />
               </div>
+            )}
+
+            {isBlindCabinet && (
+              <label>Opening Shutter Nominal Width (mm)
+                <span className="hint"> finished {effectiveBlindNominalWidth - 3} mm · fixed {finalW - effectiveBlindNominalWidth - 3} mm</span>
+                <input
+                  type="number"
+                  min={blindMinWidth}
+                  max={blindMaxWidth}
+                  step="1"
+                  value={effectiveBlindNominalWidth}
+                  onChange={(e) => {
+                    const next = parseInt(e.target.value) || blindMinWidth;
+                    setBlindNominalWidth(Math.min(blindMaxWidth, Math.max(blindMinWidth, next)));
+                  }}
+                />
+              </label>
             )}
 
             <label>Handle / Profile <span className="hint">{handleLockedByDesign ? `set by ${design}` : "P5"}</span></label>
