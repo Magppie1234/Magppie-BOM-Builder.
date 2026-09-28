@@ -738,11 +738,12 @@ const WALL_FAMILIES: Record<string, any> = {
     ],
   },
   GRO: {
-    name: "Wall ROGY",
-    p2: "GRO",
+    name: "Wall Geysar / RO",
+    // AP identifies the appliance cabinet family; GRO identifies the Geyser/RO use.
+    p2: "AP",
     variants: [
-      { id: "sgl", label: "Single door (handed)", p3: "XXX", handed: true, act: "XXX 4H", oth: "XXX JD", handle: "DSH" },
-      { id: "dbl", label: "Double door", p3: "XXX", p4: "2HS", both: true, side: "XXX 4H", handle: "DSH" },
+      { id: "sgl", label: "Single door (handed)", p3: "XXX", handed: true, act: "XXX 4H", oth: "XXX JD", handle: "GRO" },
+      { id: "dbl", label: "Double door", p3: "XXX", p4: "2HS", both: true, side: "XXX 4H", handle: "GRO" },
     ],
   },
 };
