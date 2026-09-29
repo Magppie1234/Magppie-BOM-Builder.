@@ -336,7 +336,7 @@ type PlanningPdfCabinet = {
   page: number; elevation: string; sourceLabel: string;
   zoneKey: string; familyKey: string; variantId: string;
   width: number | null; height: number | null; depth: number | null; thickness: number | null;
-  hand: "LHS" | "RHS" | ""; handle: "STD" | "XCJ"; qty: number;
+  hand: "LHS" | "RHS" | ""; handle: "TTS" | "NHX" | "XCJ" | "STD"; qty: number;
   confidence: number; warnings: string[];
 };
 type PlanningPdfResult = {
@@ -751,7 +751,22 @@ const WALL_FAMILIES: Record<string, any> = {
 const TALL_FAMILIES: Record<string, any> = {
   SHF: { name: "Tall Shelf Stone (full shutter)", p2: "SH", bracket: "TCS", holes: "6H", variants: [{ id: "sgl", label: "Single door (handed)", p3: "6SX", handed: true }, { id: "dbl", label: "Double door", p3: "6SX", p4: "2HS", double: true }] },
   SHFG: { name: "Tall Shelf Glass (full shutter)", p2: "SH", bracket: "TCS", holes: "6H", variants: [{ id: "sgl", label: "Single door (handed)", p3: "6SG", handed: true }, { id: "dbl", label: "Double door", p3: "6SG", p4: "2HS", double: true }] },
-  APP: { name: "Tall Appliance + DW", p2: "AP", bracket: "TMO", holes: "4H", applianceHeight: true, variants: [{ id: "1dw", label: "+ 1 Drawer (handed)", p4: "1HB", handed: true, handP5: true }, { id: "2dw", label: "+ 2 Drawers (handed)", p4: "2HB", handed: true, handP5: true }] },
+  APP: {
+    name: "Tall Appliance + DW",
+    // The former generic AP family is replaced by appliance-specific P2 codes.
+    // MO is the only one-drawer/two-appliance cabinet; CF/MW/OV are single-appliance
+    // cabinets with two drawers. Height and handedness supply four codes per option.
+    p2: "AP",
+    bracket: "TMO",
+    holes: "4H",
+    applianceHeight: true,
+    variants: [
+      { id: "mo-1dw", label: "Microwave + Oven · 1 Drawer (handed)", p2: "MO", p4: "1HB", handed: true, handP5: true, applianceCount: 2 },
+      { id: "cf-2dw", label: "Coffee · 2 Drawers (handed)", p2: "CF", p4: "2HB", handed: true, handP5: true, applianceCount: 1 },
+      { id: "mw-2dw", label: "Microwave · 2 Drawers (handed)", p2: "MW", p4: "2HB", handed: true, handP5: true, applianceCount: 1 },
+      { id: "ov-2dw", label: "Oven · 2 Drawers (handed)", p2: "OV", p4: "2HB", handed: true, handP5: true, applianceCount: 1 },
+    ],
+  },
   PAN: { name: "Tall Tandem Pantry", p2: "AC", bracket: "TTP", holes: "6H", variants: [{ id: "h", label: "Pantry (handed)", p3: "1SX", p5: "TPT", handed: true }] },
   DPN: { name: "Tall Drawer Pantry Stone", p2: "DW", bracket: "T3A", holes: "4H", variants: [{ id: "h", label: "Drawer pantry (handed)", p3: "1SX", p5: "5BD", handed: true }] },
   DPNG: { name: "Tall Drawer Pantry Glass", p2: "DW", bracket: "T3A", holes: "4H", variants: [{ id: "h", label: "Drawer pantry (handed)", p3: "1SG", p5: "5BD", handed: true }] },
@@ -794,6 +809,22 @@ const ZONES: Record<string, { name: string; p1: string; construct: string; mount
   LBF: { name: "Loft Blind — Full Depth", p1: "LBF", construct: "fullsides", mount: "wall", kind: "loft", blind: true, fams: "loft" },
   LOF: { name: "Loft — Full Depth", p1: "LOF", construct: "fullsides", mount: "wall", kind: "loft", fams: "loft" },
   MD: { name: "Mid Rolling Shutter", p1: "MD", construct: "fullsides", mount: "wall", kind: "md", fams: "md" },
+};
+
+// Cabinet-code handle tokens from the revised catalogue. Base units can use CJ/Gola or
+// Titus; wall/loft/mid units are handleless; tall units use Titus. Legacy STD imports
+// are accepted and normalized to TTS when rebuilt.
+const handleTokenOf = (handle: string) =>
+  handle === "XCJ" ? "CJ" : handle === "NHX" ? "NHX" : handle === "TTS" || handle === "STD" ? "TTS" : handle;
+
+const defaultHandleForZone = (zoneKey: string) => {
+  const z = ZONES[zoneKey];
+  return z?.kind ? "NHX" : z?.tall ? "TTS" : "XCJ";
+};
+
+const handlesForZone = (zoneKey: string) => {
+  const z = ZONES[zoneKey];
+  return !z?.kind && !z?.tall ? ["XCJ", "TTS"] : [defaultHandleForZone(zoneKey)];
 };
 
 const famSetOf = (z: string) => {
@@ -1008,7 +1039,7 @@ function validDesigns(zk: string, fk: string, v: any, W?: number, handle?: strin
     const isBase = !Z.kind && !Z.tall;
     if (isBase) {
       if (handle === "XCJ") ds = ds.filter((d) => !STD_DESIGNS.includes(d));
-      else if (handle === "STD") ds = ds.filter((d) => !XCJ_DESIGNS.includes(d));
+      else if (handle === "TTS" || handle === "STD") ds = ds.filter((d) => !XCJ_DESIGNS.includes(d));
     }
   }
   return ds;
@@ -1269,9 +1300,9 @@ function buildShutters(
   // N2: a tall refrigerator (REF) front carries NO hinges — the fridge door supplies its own; so we
   // suppress the hinge pack (which also removes the carcass hinge-mount, since carcassMountFor("")=null).
   const isRef = fk === "REF";
-  // Two separate tokens after the "SH" prefix: handle (XCJ→CJ, else STD) then material
-  // (glass→GL, stone→ST). Kept distinct so both are readable: SH-<CJ|STD>-<GL|ST>-...
-  const handleSeg = handle === "XCJ" ? "CJ" : "STD";
+  // Two separate tokens after the "SH" prefix: revised handle token (CJ/TTS/NHX)
+  // followed by material (glass→GL, stone→ST).
+  const handleSeg = handleTokenOf(handle);
   const matSeg = isGlassShutter ? "GL" : "ST";
   const shThk = String(shThkOf(design, isGlassShutter));
   const zp = isBase ? "B" : Z.kind === "wall" ? "W" : Z.tall ? "T" : Z.kind === "loft" ? "L" : "M";
@@ -1327,7 +1358,7 @@ function buildShutters(
       });
     });
     if (spec.upperDoor) {
-      const applianceDelta = fk === "APP" && v.id === "1dw"
+      const applianceDelta = fk === "APP" && v.p4 === "1HB"
         ? Math.max(0, appliance1Height + appliance2Height - 1000)
         : 0;
       const HE = Math.max(0, (H >= 2400 ? 1085 : 720) - applianceDelta);
@@ -1881,10 +1912,9 @@ function buildCarcassInnerRaw(
   const f = famSetOf(zk)[fk];
   const p4 = v.p4 || hand;
   const isCJ = handle === "XCJ";
-  // Two separate tokens in the cabinet code, mirroring the shutter code: handle
-  // (XCJ→CJ, else STD) then material (glass shutter WGL→GL, else stone ST).
-  // Result: <zone>-<fam>-<CJ|STD>-<GL|ST>-...
-  const handleToken = handle === "XCJ" ? "CJ" : "STD";
+  // Two separate tokens in the cabinet code, mirroring the shutter code: revised
+  // handle token (CJ/TTS/NHX), then material (glass shutter WGL→GL, else stone ST).
+  const handleToken = handleTokenOf(handle);
   const matToken = isGlassShutterFam(fk) ? "GL" : "ST";
 
   if (z.tall) {
@@ -1918,7 +1948,7 @@ function buildCarcassInnerRaw(
     const p5t = isApp ? hand || "XXX" : v.p5 || "XXX";
     const lowT = z.low ? " (Low Depth)" : "";
     const lowSh = z.low ? " (Low)" : "";
-    const code = [z.p1, f.p2, handleToken, matToken, p3, p4t, p5t, W, H, D, t].join("-") + (mat && mat !== "(none)" ? "-" + mat : "");
+    const code = [z.p1, v.p2 || f.p2, handleToken, matToken, p3, p4t, p5t, W, H, D, t].join("-") + (mat && mat !== "(none)" ? "-" + mat : "");
     const sidePk = `Set of Parts- Cab Standard Tall LH(${lh})+RH(${rh}) ${sideH}x${sd}x${t}`;
     const tbPk = `Set of Parts- Cab Standard Base${lowT} TP(JD)+BT(LEG) ${W}x${D}x${t}`;
     const backPk = `Set of Parts- Cab Standard Tall Back Wall (Prof) ${bw}x${bh}x${t}`;
@@ -1938,14 +1968,14 @@ function buildCarcassInnerRaw(
     pkRows.push(["panel", `Set of Parts- Cab Standard Base${lowT} TP(JD)+BT(LEG)`, `${W}×${D}×${t}`, 1, "Set"]);
     panels.push({ name: `Panels- Cab Top ${W}x${D}x${t}`, w: W, h: D, qty: 1, drill: "JD", pack: tbPk });
     panels.push({ name: `Panels- Cab Bottom ${W}x${D}x${t}`, w: W, h: D, qty: 1, drill: "Leg holes", pack: tbPk });
-    const isSpecialApp = fk === "APP" && (v.id === "1dw" || v.id === "2dw");
+    const isSpecialApp = fk === "APP";
     const isRef = fk === "REF";
     // REF @ 2040mm: no back wall and no shelves (not required).
     const refNoBackShelf = isRef && H === 2040;
     // Tall Appliance + DW: upper back wall dimension is derived from cabinet height
     // (cabinet height - 1349; = 1051 at the standard 2400mm height).
     const hUpper = H - 1349;
-    const hLower = v.id === "1dw" ? 286 : 686;
+    const hLower = v.p4 === "1HB" ? 286 : 686;
 
     if (isSpecialApp) {
       const backPkUpper = `Set of Parts- Cab Standard Tall Back Wall Upper (Prof) ${bw}x${hUpper}x${t}`;
@@ -2045,7 +2075,7 @@ function buildCarcassInnerRaw(
     // because pack lookup is a PREFIX match and the old name leaked these panels into the standard
     // shelf pack (showing the 547 twice — once inside "Panels- Cab Shelf" and once on its own).
     if (fk === "APP") {
-      const addQty = v.id === "1dw" ? 3 : v.id === "2dw" ? 2 : 0;
+      const addQty = v.p4 === "1HB" ? 3 : v.p4 === "2HB" ? 2 : 0;
       if (addQty > 0) {
         const shelfD13 = D - 13;
         const appShelfPk = `Panels- Cab App Shelf ${shelfW}x${shelfD13}x${t}`;
@@ -5049,11 +5079,10 @@ function enumerateCombinations(): CombiSpec[] {
   const out: CombiSpec[] = [];
   const t = 15;
   Object.entries(ZONES).forEach(([zk, z]: [string, any]) => {
-    const isBase = !z.kind && !z.tall;
     const fams = famSetOf(zk);
     Object.entries(fams).forEach(([fk, f]: [string, any]) => {
       const sizeSpec = SIZES[`${zk}.${fk}`] || defSizes(zk);
-      const handles = isBase ? ["XCJ", "STD"] : ["STD"];
+      const handles = handlesForZone(zk);
       const hasDoubleVariant = (f.variants || []).some((vt: any) => /double/i.test(vt.label || ""));
       (f.variants || []).forEach((v: any) => {
         if (z.blind && (v.both || /double/i.test(v.label || ""))) return;
@@ -6284,7 +6313,7 @@ function parseCabinetCodeToModel(
   try {
     if (!code) return null;
     // Current cabinet code (11 fields + optional finish suffix):
-    //   p1 - p2 - handleToken(CJ|STD) - matToken(GL|ST) - p3 - p4 - p5 - W - H - D - t - [carcassMat(-shutterMat)]
+    //   p1 - p2 - handleToken(CJ|TTS|NHX) - matToken(GL|ST) - p3 - p4 - p5 - W - H - D - t - [carcassMat(-shutterMat)]
     const cleanCode = code.split("-SO-")[0].trim();
     const parts = cleanCode.split("-");
     if (parts.length < 11) return null;
@@ -6306,7 +6335,9 @@ function parseCabinetCodeToModel(
     // Resolve family by its p2 code, disambiguating shared p2 (e.g. WGL/WST both "SH") by
     // the glass/stone material token, then by a matching variant p3 (e.g. BPO vs WBP).
     const fams = famSetOf(zk);
-    let candidates = Object.keys(fams).filter((k) => fams[k].p2 === p2);
+    let candidates = Object.keys(fams).filter((k) =>
+      fams[k].p2 === p2 || fams[k].variants?.some((variant: any) => variant.p2 === p2)
+    );
     if (candidates.length === 0) return null;
     if (candidates.length > 1) {
       const wantGlass = matToken === "GL";
@@ -6328,7 +6359,16 @@ function parseCabinetCodeToModel(
     const isDouble = [p3, p4, p5].includes("2HS");
     const isDoubleVar = (v: any) => !!(v.both || v.double || /double|dbl/i.test((v.id || "") + (v.label || "")));
     let variantObj: any;
-    if (isDouble) {
+    const p2Variant = familyObj.variants.find((variant: any) => variant.p2 === p2);
+    if (p2Variant) {
+      variantObj = p2Variant;
+    } else if (fk === "APP" && p2 === "AP") {
+      // Legacy generic Tall Appliance migration: the former 1HB cabinet becomes MO;
+      // the former 2HB cabinet becomes CF. MW and OV only exist as new explicit codes.
+      variantObj = familyObj.variants.find((variant: any) =>
+        variant.p2 === (p4 === "1HB" ? "MO" : "CF")
+      );
+    } else if (isDouble) {
       variantObj = familyObj.variants.find(isDoubleVar);
     } else {
       variantObj =
@@ -6338,7 +6378,13 @@ function parseCabinetCodeToModel(
     variantObj = variantObj || familyObj.variants[0];
 
     const hand = [p4, p5].includes("RHS") ? "RHS" : "LHS";
-    const handle = handleToken === "CJ" ? "XCJ" : "STD";
+    const handle = handleToken === "CJ"
+      ? "XCJ"
+      : handleToken === "NHX"
+      ? "NHX"
+      : handleToken === "TTS" || handleToken === "STD"
+      ? "TTS"
+      : defaultHandleForZone(zk);
 
     // Finish suffix: "carcass-shutter" (dual) or single finish. Finishes are space-delimited,
     // so the dual form splits cleanly on the first "-".
@@ -7708,7 +7754,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       const variantObj = familyObj?.variants?.find((v: any) => String(v.id) === String(c.variantId));
       if (!familyObj || !variantObj || !c.width || !c.height || !c.depth) { skipped++; return; }
       const chosenDesign = isGlassShutterFam(c.familyKey) ? "NEON20" : globalDesign;
-      const chosenHandle = STD_DESIGNS.includes(chosenDesign) ? "STD" : XCJ_DESIGNS.includes(chosenDesign) ? "XCJ" : c.handle;
+      const chosenHandle = STD_DESIGNS.includes(chosenDesign) ? "TTS" : XCJ_DESIGNS.includes(chosenDesign) ? "XCJ" : c.handle;
       try {
         const model = buildModel(
           c.zoneKey, c.familyKey, variantObj, chosenHandle, chosenDesign,
@@ -8926,18 +8972,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     }
   }, [family, currentFam, variantId, zone]);
 
-  // Reset Handle XCJ / STD depending on zone (Base zones only get XCJ handle option)
+  // Reset the handle to the revised catalogue default for the selected zone.
   const isBaseZone = useMemo(() => {
     const z = ZONES[zone];
     return !z.kind && !z.tall;
   }, [zone]);
 
   useEffect(() => {
-    if (!isBaseZone) {
-      setHandle("STD");
-    } else {
-      setHandle("XCJ");
-    }
+    setHandle(defaultHandleForZone(zone));
   }, [zone, isBaseZone]);
 
   // Calculate actual numeric dimensions
@@ -9059,14 +9101,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
   // Design drives/locks the handle (base zones only, where the handle is selectable):
   // MD1/MD3 + their CM variants are handleless XCJ; MD2 + its CM variants use the Titus
-  // (STD) handle. CL1/CL2/NEON20 leave the handle to the user.
+  // (TTS) handle. CL1/CL2/NEON20 leave the handle to the user.
   const handleLockedByDesign = isBaseZone && (XCJ_DESIGNS.includes(design) || STD_DESIGNS.includes(design));
   useEffect(() => {
     if (!isBaseZone) return;
     if (XCJ_DESIGNS.includes(design)) {
       if (handle !== "XCJ") setHandle("XCJ");
     } else if (STD_DESIGNS.includes(design)) {
-      if (handle !== "STD") setHandle("STD");
+      if (handle !== "TTS") setHandle("TTS");
     }
   }, [design, isBaseZone, handle]);
 
@@ -9144,12 +9186,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   ], []);
 
   const handleOptions = useMemo(() => {
-    const opts = [];
-    if (isBaseZone) {
-      opts.push({ value: "XCJ", label: "XCJ — CJ / Gola" });
-    }
-    opts.push({ value: "STD", label: "STD — Standard" });
-    return opts;
+    const values = isBaseZone ? ["XCJ", "TTS", "NHX"] : ["TTS", "NHX"];
+    return values.map((value) => ({
+      value,
+      label: value === "XCJ" ? "XCJ — CJ / Gola" : value === "NHX" ? "NHX — No Handle" : "TTS — Titus",
+    }));
   }, [isBaseZone]);
 
   const designOptions = useMemo(() => {
@@ -10036,7 +10077,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     const m = line.m;
     setZone(m.zk || "BC"); setFamily(m.fk || "DW"); setVariantId(m.v?.id || "");
     setHanded(m.shutters?.[0]?.loc === "R" ? "RHS" : "LHS");
-    setHandle(m.handle || (m.isCJ ? "XCJ" : "STD")); setDesign(m.design || m.shutters?.[0]?.design || "MD1");
+    setHandle(m.handle || (m.isCJ ? "XCJ" : defaultHandleForZone(m.zk || "BC"))); setDesign(m.design || m.shutters?.[0]?.design || "MD1");
     setCarcassMat(m.carcassMat || m.mat); setShutterMat(m.shutterMat || m.mat);
     if (isGlassShutterFam(m.fk)) setGlassColor(m.shutterMat || "CLEAR");
     setCarcassProfileColor(m.carcassProfileColor || "CHAMPAGNE"); setShutterProfileColor(m.shutterProfileColor || "CHAMPAGNE");
@@ -10110,11 +10151,10 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     const placeholderDesign = "MD1"; // only feeds shutter geometry; not part of the carcass code
 
     Object.entries(ZONES).forEach(([zk, z]) => {
-      const isBase = !z.kind && !z.tall; // base zones (BC/BCL/BB/BBL) offer XCJ + STD handles
       const fams = famSetOf(zk);
       Object.entries(fams).forEach(([fk, f]: [string, any]) => {
         const sizeSpec = SIZES[`${zk}.${fk}`] || defSizes(zk);
-        const handles = isBase ? ["XCJ", "STD"] : ["STD"];
+        const handles = handlesForZone(zk);
         // Does this family offer a "Double" configuration (Double door / Double bowl / ...)?
         const hasDoubleVariant = (f.variants || []).some((vt: any) => /double/i.test(vt.label || ""));
         (f.variants || []).forEach((v: any) => {
@@ -10273,11 +10313,10 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     const t = 15;
 
     Object.entries(ZONES).forEach(([zk, z]) => {
-      const isBase = !z.kind && !z.tall;
       const fams = famSetOf(zk);
       Object.entries(fams).forEach(([fk, f]: [string, any]) => {
         const sizeSpec = SIZES[`${zk}.${fk}`] || defSizes(zk);
-        const handles = isBase ? ["XCJ", "STD"] : ["STD"];
+        const handles = handlesForZone(zk);
         const hasDoubleVariant = (f.variants || []).some((vt: any) => /double/i.test(vt.label || ""));
         (f.variants || []).forEach((v: any) => {
           // Blind units never offer a double-door configuration.
@@ -10811,7 +10850,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               </>
             )}
 
-            {activeFamilyKey === "APP" && currentVariant?.id === "1dw" && (
+            {activeFamilyKey === "APP" && currentVariant?.p4 === "1HB" && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
                 <label>Appliance 1 Height (mm)
                   <input type="number" min={600} value={appliance1Height} onChange={(e) => setAppliance1Height(Math.max(600, parseInt(e.target.value) || 600))} />
