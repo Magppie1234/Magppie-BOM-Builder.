@@ -555,7 +555,8 @@ type StockItem = {
 };
 
 // ---- Constants & Helper Functions ----
-const STEP = 2;
+// Stepper clearance is 2.5 mm per back-panel edge (5 mm total per dimension).
+const STEP = 2.5;
 const CJ_CUT = 23;
 const SHELF_OFF = 40;
 const SQDIV = 92903.04;
