@@ -1160,7 +1160,7 @@ function addDrawerBoxes(
 
   // 3. Emit one Drawer Pack per variant with total quantities (per-drawer × count)
   const backW = W - 72;
-  const bottomW = W - 50;
+  const bottomW = W - 53;
   const bottomD = D - 77;
   const faciaW = W - 2 * t - 8;
   // HM517 center strips normally follow the physical drawer count. The standard
@@ -1174,7 +1174,7 @@ function addDrawerBoxes(
     const n = a.count;
     const drawerPackName = `Drawer Pack- Cab Drawer Box ${variant}`;
     // Only the high-back pack in Grain Drawer / Waste Bin gets the wider back panel.
-    // The drawer bottom remains on the existing W-50 × D-77 calculation.
+    // The drawer bottom uses W-53 × D-77 for every drawer variant.
     const isGrainOrWasteHigh = variant === "High" && (fk === "GD" || fk === "WBP");
     const drawerBackW = isGrainOrWasteHigh ? backW + 22 : backW;
 

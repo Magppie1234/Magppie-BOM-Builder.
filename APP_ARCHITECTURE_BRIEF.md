@@ -265,7 +265,7 @@ Options are exactly **`None`** and **`2HB + 1BL`** (`"2hb1bl"`).
 ### Dimension formulas (emit loop)
 ```
 backW   = W - 72   (t=15, drill JD)
-bottomW = W - 50   bottomD = D - 77   (t=6, flat)
+bottomW = W - 53   bottomD = D - 77   (t=6, flat)
 faciaW  = W - 2*t - 8
 DBS profile: len 483, qty 2*n
 DBC profile: len W - 78, qty 4*n
