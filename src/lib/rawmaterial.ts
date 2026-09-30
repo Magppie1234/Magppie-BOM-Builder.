@@ -756,6 +756,7 @@ const PROFILE_CODE_EQUIVALENCES: Record<string, string[]> = {
   "dbc": ["hm535", "dbc"],
 
   "hm517": ["hm517", "md1", "ctr"],
+  "md1": ["md1", "hm517", "ctr"],
   "ctr": ["hm517", "md1", "ctr"],
 
   "md1cm1": ["md1cm1", "cm1"],

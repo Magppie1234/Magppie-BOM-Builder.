@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback, Fragment } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, Fragment, type CSSProperties } from "react";
 import * as XLSX from "xlsx-js-style";
 import { jsPDF } from "jspdf";
 import JsBarcode from "jsbarcode";
@@ -270,6 +270,9 @@ interface Shutter {
   hinge: string;
   hq?: number;
   loc?: string; // L / R / U / F / X — which side/position this leaf occupies
+  // Base-unit Titus shutters always carry the MD2/HM-527 member on the top edge.
+  // Door handing changes the hinge side only; it must not move the handle profile.
+  md2Top?: boolean;
 }
 
 interface CarcassModel {
@@ -1356,6 +1359,7 @@ function buildShutters(
         profH: w,
         hinge,
         loc,
+        md2Top: isBase,
       });
     });
     if (spec.upperDoor) {
@@ -1381,6 +1385,7 @@ function buildShutters(
         profH: dw,
         hinge: isRef ? "" : hingePackFor(h),
         loc,
+        md2Top: isBase,
       });
     }
   } else {
@@ -1400,8 +1405,9 @@ function buildShutters(
     if (spec.blindW) {
       const minBlindWidth = Z.kind === "wall" || Z.kind === "loft" ? 400 : 500;
       const maxBlindWidth = Math.max(minBlindWidth, W - 4);
-      const defaultBlindWidth = Math.max(minBlindWidth, Math.round(W / 2));
-      const blindW = Math.min(maxBlindWidth, Math.max(minBlindWidth, blindNominalWidth ?? defaultBlindWidth));
+      const zoneBlindDefault = Z.kind === "wall" || Z.kind === "loft" ? 400 : 550;
+      const defaultBlindWidth = Math.min(maxBlindWidth, Math.max(minBlindWidth, zoneBlindDefault));
+      const blindW = blindNominalWidth ?? defaultBlindWidth;
       const ded = shDeduct(isBase, design, "RH");
       const h = H - ded;
       const dw1 = blindW - 3;
@@ -1419,6 +1425,7 @@ function buildShutters(
         hinge: isRef ? "" : hingePackFor(h),
         hq: 1,
         loc: loc1,
+        md2Top: isBase,
       });
       const rem = W - blindW;
       if (rem > 0) {
@@ -1466,6 +1473,7 @@ function buildShutters(
         profH: dw,
         hinge: isRef ? "" : hingePackFor(h),
         loc: d.loc,
+        md2Top: isBase,
       });
     });
   }
@@ -2603,7 +2611,9 @@ function buildModel(
   if (ZONES[zk]?.blind) {
     const blindMin = ZONES[zk]?.kind === "wall" || ZONES[zk]?.kind === "loft" ? 400 : 500;
     const blindMax = Math.max(blindMin, W - 4);
-    m.blindNominalWidth = Math.min(blindMax, Math.max(blindMin, blindNominalWidth ?? Math.max(blindMin, Math.round(W / 2))));
+    const zoneBlindDefault = ZONES[zk]?.kind === "wall" || ZONES[zk]?.kind === "loft" ? 400 : 550;
+    const blindDefault = Math.min(blindMax, Math.max(blindMin, zoneBlindDefault));
+    m.blindNominalWidth = blindNominalWidth ?? blindDefault;
   }
   m.mat = carcassMat; // fallback
   // Every cabinet carries 4 cabinet connectors (fitted on site).
@@ -3269,16 +3279,16 @@ function addHardwareRow(
 
 // MD2 (Titus-handle) family: the shutter frame is NOT uniform. Exactly ONE edge is the MD2 profile
 // (HM-527) and the other three edges are MD1 (HM-517):
-//   • Side-opening doors → the MD2 profile is the loc-side vertical (loc "L" → LH, "R" → RH); the
-//     opposite vertical + top + bottom are MD1. (Right-opening → LH is MD2, per the factory grid.)
-//   • Drawers → the MD2 profile is the TOP horizontal; the two verticals + bottom are MD1.
+//   • Base doors and drawers → MD2 is always the TOP horizontal; opening side only controls hinges.
+//   • Non-base side-opening doors → MD2 uses the opening-side vertical unless a cabinet-specific
+//     placement rule (such as the tall appliance bottom handle) overrides it.
 // Each group is emitted with its own profileCode so it resolves to its own raw profile.
 const isMD2Family = (design: string): boolean => /^MD2/i.test(design || "");
 const baseShutterDesign = (design: string): string => String(design || "").replace(/CM[12]$/i, "");
 const cmShutterDesign = (design: string): string | null => design.match(/(CM[12])$/i)?.[1].toUpperCase() || null;
 
 function md2FrameGroups(s: Shutter, applianceBottom: boolean = false): Array<{ design: string; lengths: Array<{ len: number; qty: number; name: string }> }> {
-  if (s.kind === "drawer") {
+  if (s.kind === "drawer" || s.md2Top) {
     return [
       { design: "MD2", lengths: [{ len: s.profH, qty: 1, name: `Profile TP (MD2)` }] },
       { design: "MD1", lengths: [
@@ -6161,6 +6171,109 @@ interface SearchableSelectProps {
   disabled?: boolean;
 }
 
+interface EditableNumberInputProps {
+  value: number;
+  onValueChange: (value: number) => void;
+  fieldLabel?: string;
+  validateOnAdd?: boolean;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  step?: number | string;
+  className?: string;
+  placeholder?: string;
+  disabled?: boolean;
+  title?: string;
+  style?: CSSProperties;
+}
+
+/**
+ * A number input with a local text draft. Native controlled number inputs bound directly to a
+ * numeric state cannot be cleared because an empty string is immediately converted back to the
+ * previous/default number. Keeping the draft here lets users select-all, delete, and type the exact
+ * replacement; a blank field is restored only when they leave it.
+ */
+function EditableNumberInput({
+  value,
+  onValueChange,
+  fieldLabel = "Value",
+  validateOnAdd = false,
+  required = true,
+  min,
+  max,
+  step,
+  className,
+  placeholder,
+  disabled,
+  title,
+  style,
+}: EditableNumberInputProps) {
+  const [draft, setDraft] = useState(String(value));
+  const [touched, setTouched] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (document.activeElement !== inputRef.current) setDraft(String(value));
+  }, [value]);
+
+  useEffect(() => {
+    const showValidation = () => { if (validateOnAdd) setTouched(true); };
+    window.addEventListener("builder-number-validation", showValidation);
+    return () => window.removeEventListener("builder-number-validation", showValidation);
+  }, [validateOnAdd]);
+
+  const parsedValue = (raw: string): number | null => {
+    if (raw.trim() === "") return null;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return null;
+    return parsed;
+  };
+
+  const number = parsedValue(draft);
+  const error = required && number === null
+    ? `${fieldLabel} is mandatory and must be filled.`
+    : number !== null && min !== undefined && number < min
+      ? `${fieldLabel} must be at least ${min}.`
+      : number !== null && max !== undefined && number > max
+        ? `${fieldLabel} must not exceed ${max}.`
+        : "";
+  const showError = touched && !!error;
+
+  return (
+    <span className="editable-number-wrap">
+      <input
+        ref={inputRef}
+        type="number"
+        value={draft}
+        min={min}
+        max={max}
+        step={step}
+        required={required}
+        aria-label={fieldLabel}
+        aria-invalid={showError}
+        data-number-field={fieldLabel}
+        data-validate-on-add={validateOnAdd ? "true" : undefined}
+        className={`${className || ""}${showError ? " number-input-error" : ""}`.trim()}
+        placeholder={placeholder}
+        disabled={disabled}
+        title={showError ? error : title}
+        style={style}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setDraft(raw);
+          const next = parsedValue(raw);
+          // Preserve exactly what the user typed. Validation reports an out-of-range value;
+          // it must never be silently replaced by the minimum or maximum.
+          if (next !== null) onValueChange(next);
+        }}
+        onBlur={() => setTouched(true)}
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+      />
+      {showError && <span className="number-error-note" role="alert">{error}</span>}
+    </span>
+  );
+}
+
 function SearchableSelect({ value, onChange, options, placeholder = "Search...", disabled = false }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -8990,11 +9103,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const isBlindCabinet = !!ZONES[zone]?.blind;
   const blindMinWidth = ZONES[zone]?.kind === "wall" || ZONES[zone]?.kind === "loft" ? 400 : 500;
   const blindMaxWidth = Math.max(blindMinWidth, finalW - 4);
-  const defaultBlindNominalWidth = Math.min(blindMaxWidth, Math.max(blindMinWidth, Math.round(finalW / 2)));
-  const effectiveBlindNominalWidth = Math.min(
-    blindMaxWidth,
-    Math.max(blindMinWidth, blindNominalWidth ?? defaultBlindNominalWidth)
-  );
+  const blindZoneDefault = ZONES[zone]?.kind === "wall" || ZONES[zone]?.kind === "loft" ? 400 : 550;
+  const defaultBlindNominalWidth = Math.min(blindMaxWidth, Math.max(blindMinWidth, blindZoneDefault));
+  const effectiveBlindNominalWidth = blindNominalWidth ?? defaultBlindNominalWidth;
 
   // The family's "Double" configuration (Double door / Double bowl / ...), if any.
   const doubleVariantId = useMemo(() => {
@@ -9733,12 +9844,16 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             }
             setRawOptionsMap((prev) => ({ ...prev, [key]: items }));
             setRawErrorMap((prev) => { const next = { ...prev }; delete next[key]; return next; });
-            if (items.length > 0) {
-              setSelectedRawIds((prev) => {
-                if (prev[key]) return prev; // keep existing selection
-                return { ...prev, [key]: items[0].item_id || "" };
-              });
-            }
+            // Profiles can have close catalogue alternatives (for example HM-517 names with or
+            // without "ANODISED"). Never guess: retain a valid user choice, otherwise leave the
+            // picker empty so the user explicitly selects the required catalogue item.
+            setSelectedRawIds((prev) => {
+              const current = prev[key];
+              if (!current || items.some((item) => item.item_id === current)) return prev;
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            });
             setRawLoadingMap((prev) => ({ ...prev, [key]: false }));
           })
           .catch((err) => {
@@ -10059,11 +10174,45 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   }, [project]);
 
   const addLine = () => {
+    window.dispatchEvent(new Event("builder-number-validation"));
+    const numberInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[data-validate-on-add="true"]'));
+    const missingFields: string[] = [];
+    const rangeErrors: string[] = [];
+    numberInputs.forEach((input) => {
+      if (input.disabled) return [];
+      const field = input.dataset.numberField || input.getAttribute("aria-label") || "Number field";
+      const raw = input.value.trim();
+      if (!raw || !Number.isFinite(input.valueAsNumber)) {
+        missingFields.push(field);
+        return;
+      }
+      const min = input.min === "" ? null : Number(input.min);
+      const max = input.max === "" ? null : Number(input.max);
+      if (min !== null && input.valueAsNumber < min) {
+        rangeErrors.push(`${field}: ${input.valueAsNumber} is below the minimum. Enter ${min} or more.`);
+      } else if (max !== null && input.valueAsNumber > max) {
+        rangeErrors.push(`${field}: ${input.valueAsNumber} exceeds the highest allowed value. Enter ${max} or less.`);
+      }
+    });
+    if (missingFields.length > 0 || rangeErrors.length > 0) {
+      const firstInvalid = numberInputs.find((input) => !input.checkValidity());
+      firstInvalid?.focus({ preventScroll: false });
+      firstInvalid?.scrollIntoView({ behavior: "smooth", block: "center" });
+      const sections: string[] = [];
+      if (missingFields.length > 0) {
+        sections.push(`Mandatory fields are not filled:\n${missingFields.map((field) => `• ${field}`).join("\n")}`);
+      }
+      if (rangeErrors.length > 0) {
+        sections.push(`Values outside the allowed range:\n${rangeErrors.map((error) => `• ${error}`).join("\n")}`);
+      }
+      alert(`Cannot add this cabinet.\n\n${sections.join("\n\n")}`);
+      return;
+    }
     if (!elevation) {
       alert("Please select an Elevation before adding the cabinet to the project.");
       return;
     }
-    const q = Math.max(1, lineQty);
+    const q = lineQty;
     if (editingLineIndex !== null) {
       setProject((curr) => curr.map((line, idx) => idx === editingLineIndex ? { ...line, qty: q, m: model, rate: soRate, elevation } : line));
       setEditingLineIndex(null);
@@ -10854,10 +11003,10 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             {activeFamilyKey === "APP" && currentVariant?.p4 === "1HB" && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
                 <label>Appliance 1 Height (mm)
-                  <input type="number" min={600} value={appliance1Height} onChange={(e) => setAppliance1Height(Math.max(600, parseInt(e.target.value) || 600))} />
+                  <EditableNumberInput fieldLabel="Appliance 1 Height (mm)" validateOnAdd min={600} value={appliance1Height} onValueChange={(value) => setAppliance1Height(Math.round(value))} />
                 </label>
                 <label>Appliance 2 Height (mm)
-                  <input type="number" min={400} value={appliance2Height} onChange={(e) => setAppliance2Height(Math.max(400, parseInt(e.target.value) || 400))} />
+                  <EditableNumberInput fieldLabel="Appliance 2 Height (mm)" validateOnAdd min={400} value={appliance2Height} onValueChange={(value) => setAppliance2Height(Math.round(value))} />
                 </label>
                 <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--accent2)" }}>
                   Total: {appliance1Height + appliance2Height} mm (minimum 1000 mm). Increases reduce only the upper shutter height.
@@ -10880,16 +11029,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             {isBlindCabinet && (
               <label>Opening Shutter Nominal Width (mm)
                 <span className="hint"> finished {effectiveBlindNominalWidth - 3} mm · fixed {finalW - effectiveBlindNominalWidth - 3} mm</span>
-                <input
-                  type="number"
+                <EditableNumberInput
+                  fieldLabel="Opening Shutter Nominal Width (mm)"
+                  validateOnAdd
                   min={blindMinWidth}
                   max={blindMaxWidth}
                   step="1"
                   value={effectiveBlindNominalWidth}
-                  onChange={(e) => {
-                    const next = parseInt(e.target.value) || blindMinWidth;
-                    setBlindNominalWidth(Math.min(blindMaxWidth, Math.max(blindMinWidth, next)));
-                  }}
+                  onValueChange={(value) => setBlindNominalWidth(Math.round(value))}
                 />
               </label>
             )}
@@ -11078,7 +11225,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                   placeholder="Search width..."
                 />
                 {wSel === "custom" && (
-                  <input className="dimCustom" type="number" step="10" placeholder="custom W" value={customW} onChange={(e) => handleCustomWidth(parseInt(e.target.value) || 0)} />
+                  <EditableNumberInput fieldLabel="Cabinet Width (mm)" validateOnAdd min={1} className="dimCustom" step="10" placeholder="custom W" value={customW} onValueChange={(value) => handleCustomWidth(Math.round(value))} />
                 )}
               </div>
 
@@ -11090,7 +11237,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                   placeholder="Search height..."
                 />
                 {hSel === "custom" && (
-                  <input className="dimCustom" type="number" step="10" placeholder="custom H" value={customH} onChange={(e) => setCustomH(parseInt(e.target.value) || 0)} />
+                  <EditableNumberInput fieldLabel="Cabinet Height (mm)" validateOnAdd min={1} className="dimCustom" step="10" placeholder="custom H" value={customH} onValueChange={(value) => setCustomH(Math.round(value))} />
                 )}
               </div>
 
@@ -11102,7 +11249,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                   placeholder="Search depth..."
                 />
                 {dSel === "custom" && (
-                  <input className="dimCustom" type="number" step="10" placeholder="custom D" value={customD} onChange={(e) => setCustomD(parseInt(e.target.value) || 0)} />
+                  <EditableNumberInput fieldLabel="Cabinet Depth (mm)" validateOnAdd min={1} className="dimCustom" step="10" placeholder="custom D" value={customD} onValueChange={(value) => setCustomD(Math.round(value))} />
                 )}
               </div>
             </div>
@@ -11115,7 +11262,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                 setThickness(15);
               }
             }}>{tLocked ? "🔒 locked" : "🔓 unlocked"}</button></label>
-            <input type="number" value={thickness} min="5" max="40" step="1" disabled={tLocked} onChange={(e) => setThickness(parseInt(e.target.value) || 15)} />
+            <EditableNumberInput fieldLabel="Thickness (mm)" validateOnAdd value={thickness} min={5} max={40} step="1" disabled={tLocked} onValueChange={(value) => setThickness(Math.round(value))} />
           </div>
 
         </div>
@@ -11168,13 +11315,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             <datalist id="cab-elev-list">
               {ELEVATION_OPTIONS.map((el) => (<option key={el} value={el} />))}
             </datalist>
-            <input
-              type="number"
+            <EditableNumberInput
+              fieldLabel="Project Line Quantity"
+              validateOnAdd
               value={lineQty}
-              min="1"
+              min={1}
               step="1"
               title="Qty"
-              onChange={(e) => setLineQty(Math.max(1, parseInt(e.target.value) || 1))}
+              onValueChange={(value) => setLineQty(Math.round(value))}
             />
             <button className="addbtn" onClick={addLine} disabled={!elevation} title={!elevation ? "Select an Elevation first" : editingLineIndex !== null ? "Update project line" : "Add to Project"}>
               {editingLineIndex !== null ? "Update Project Line" : "+ Add to Project"}
@@ -11556,7 +11704,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                                   {(["width", "height", "depth"] as const).map((field) => (
                                     <td key={field}><input type="number" min={1} value={c[field] ?? ""} onChange={(e) => updatePlanningPdfCabinet(i, { [field]: e.target.value ? Number(e.target.value) : null })} style={{ width: 72, padding: "4px 5px", fontSize: 11 }} /></td>
                                   ))}
-                                  <td><input type="number" min={1} value={c.qty} onChange={(e) => updatePlanningPdfCabinet(i, { qty: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 52, padding: "4px 5px", fontSize: 11 }} /></td>
+                                  <td><EditableNumberInput fieldLabel="Imported Cabinet Quantity" min={1} value={c.qty} onValueChange={(value) => updatePlanningPdfCabinet(i, { qty: Math.round(value) })} style={{ width: 52, padding: "4px 5px", fontSize: 11 }} /></td>
                                   <td style={{ color: needsReview ? "#9a6700" : "#26734d", fontWeight: 700 }}>{Math.round(c.confidence * 100)}%</td>
                                   <td><button className="delbtn" onClick={() => removePlanningPdfCabinet(i)}>Remove</button></td>
                                 </tr>
@@ -11814,14 +11962,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               </div>
                             </td>
                             <td style={{ textAlign: "right" }}>
-                              <input
-                                type="number"
+                              <EditableNumberInput
+                                fieldLabel="Project Line Rate"
                                 value={l.rate || 0}
-                                min="0"
-                                onChange={(e) => {
-                                  const val = Math.max(0, parseFloat(e.target.value) || 0);
-                                  setProject((curr) => curr.map((item, idx) => idx === i ? { ...item, rate: val } : item));
-                                }}
+                                min={0}
+                                onValueChange={(value) => setProject((curr) => curr.map((item, idx) => idx === i ? { ...item, rate: value } : item))}
                                 style={{ width: "95px", textAlign: "right", padding: "4px", border: "1px solid var(--line)", borderRadius: "3px", fontFamily: "var(--font-mono, monospace)" }}
                               />
                             </td>
@@ -11940,11 +12085,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               </select>
                             </td>
                             <td style={{ padding: "8px", textAlign: "center" }}>
-                              <input
-                                type="number"
+                              <EditableNumberInput
+                                fieldLabel="Filler Quantity"
                                 min={1}
                                 value={item.qty}
-                                onChange={(e) => updateFiller(item.id, { qty: Math.max(1, parseInt(e.target.value) || 1) })}
+                                onValueChange={(value) => updateFiller(item.id, { qty: Math.round(value) })}
                                 style={{ width: "60px", padding: "4px 6px", border: "1px solid var(--line)", borderRadius: "3px", textAlign: "center", fontSize: "11px", background: "#fff" }}
                               />
                             </td>
@@ -12065,11 +12210,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               </select>
                             </td>
                             <td style={{ padding: "8px", textAlign: "center" }}>
-                              <input
-                                type="number"
+                              <EditableNumberInput
+                                fieldLabel="Visible Panel Quantity"
                                 min={1}
                                 value={item.qty}
-                                onChange={(e) => updateVisiblePanel(item.id, { qty: Math.max(1, parseInt(e.target.value) || 1) })}
+                                onValueChange={(value) => updateVisiblePanel(item.id, { qty: Math.round(value) })}
                                 style={{ width: "60px", padding: "4px 6px", border: "1px solid var(--line)", borderRadius: "3px", textAlign: "center", fontSize: "11px", background: "#fff" }}
                               />
                             </td>
@@ -12229,7 +12374,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               <input list="cab-elev-list" placeholder="AA / custom" value={item.elevation} onChange={(e) => updateCountertop(item.id, { elevation: e.target.value })} style={{ ...numIn, width: "80px" }} />
                             </td>
                             <td style={{ padding: "6px", textAlign: "center" }}>
-                              <input type="number" min={1} value={item.qty} onChange={(e) => updateCountertop(item.id, { qty: Math.max(1, parseInt(e.target.value) || 1) })} style={{ ...numIn, width: "48px" }} />
+                              <EditableNumberInput fieldLabel="Countertop Quantity" min={1} value={item.qty} onValueChange={(value) => updateCountertop(item.id, { qty: Math.round(value) })} style={{ ...numIn, width: "48px" }} />
                             </td>
                             <td style={{ padding: "6px", textAlign: "center" }}>
                               <button className="clr" title="Remove row" onClick={() => removeCountertop(item.id)} style={{ fontSize: "13px", padding: "2px 8px", color: "#c0392b" }}>×</button>
@@ -12320,11 +12465,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                               />
                             </td>
                             <td style={{ padding: "8px", textAlign: "center" }}>
-                              <input
-                                type="number"
+                              <EditableNumberInput
+                                fieldLabel="Backsplash Quantity"
                                 min={1}
                                 value={item.qty}
-                                onChange={(e) => updateBacksplash(item.id, { qty: Math.max(1, parseInt(e.target.value) || 1) })}
+                                onValueChange={(value) => updateBacksplash(item.id, { qty: Math.round(value) })}
                                 style={{ width: "55px", padding: "4px 6px", border: "1px solid var(--line)", borderRadius: "3px", textAlign: "center", fontSize: "11px", background: "#fff" }}
                               />
                             </td>
@@ -12800,7 +12945,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                           </label>
                           <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
                             Qty
-                            <input type="number" min={1} value={row.qty} onChange={(e) => updateOtherAccRow(row.id, { qty: Math.max(1, parseInt(e.target.value) || 1) })} style={{ width: "60px", fontSize: 11, padding: "4px 6px", textAlign: "center" }} />
+                            <EditableNumberInput fieldLabel="Other Accessory Quantity" min={1} value={row.qty} onValueChange={(value) => updateOtherAccRow(row.id, { qty: Math.round(value) })} style={{ width: "60px", fontSize: 11, padding: "4px 6px", textAlign: "center" }} />
                           </label>
                           <button className="rm" style={{ marginLeft: "auto" }} onClick={() => removeOtherAccRow(row.id)}>remove</button>
                         </div>
@@ -12835,7 +12980,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                             </label>
                             <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
                               Qty (nos)
-                              <input type="number" step={1} min={0} value={row.qty} onChange={(e) => updateAccessoryRow(row.id, { qty: Math.max(0, Math.round(parseFloat(e.target.value) || 0)) })} style={{ width: "70px", fontSize: 11, padding: "4px 6px" }} />
+                              <EditableNumberInput fieldLabel="Accessory Quantity" step={1} min={0} value={row.qty} onValueChange={(value) => updateAccessoryRow(row.id, { qty: Math.round(value) })} style={{ width: "70px", fontSize: 11, padding: "4px 6px" }} />
                             </label>
                             <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
                               Size
@@ -12856,8 +13001,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                             )}
                             {row.type === "skirting" && (
                               <>
-                                <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>Straight<input type="number" min={0} value={row.straightConnectors} onChange={(e) => updateAccessoryRow(row.id, { straightConnectors: parseInt(e.target.value) || 0 })} style={{ width: "50px", fontSize: 11, padding: "4px 6px", textAlign: "center" }} /></label>
-                                <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>L-conn<input type="number" min={0} value={row.lConnectors} onChange={(e) => updateAccessoryRow(row.id, { lConnectors: parseInt(e.target.value) || 0 })} style={{ width: "50px", fontSize: 11, padding: "4px 6px", textAlign: "center" }} /></label>
+                                <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>Straight<EditableNumberInput fieldLabel="Straight Connector Quantity" min={0} value={row.straightConnectors} onValueChange={(value) => updateAccessoryRow(row.id, { straightConnectors: Math.round(value) })} style={{ width: "50px", fontSize: 11, padding: "4px 6px", textAlign: "center" }} /></label>
+                                <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>L-conn<EditableNumberInput fieldLabel="L-Connector Quantity" min={0} value={row.lConnectors} onValueChange={(value) => updateAccessoryRow(row.id, { lConnectors: Math.round(value) })} style={{ width: "50px", fontSize: 11, padding: "4px 6px", textAlign: "center" }} /></label>
                               </>
                             )}
                             <button className="rm" style={{ marginLeft: "auto" }} onClick={() => removeAccessoryRow(row.id)}>remove</button>
@@ -13059,6 +13204,34 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
           margin-top: 10px;
           text-align: center;
           font-weight: bold;
+        }
+
+        .editable-number-wrap {
+          display: inline-flex;
+          flex-direction: column;
+          gap: 4px;
+          max-width: 100%;
+          vertical-align: top;
+        }
+        .editable-number-wrap input.number-input-error,
+        input[type="number"]:user-invalid {
+          border-color: #c0392b !important;
+          background: #fff1f0 !important;
+          color: #9b1c1c !important;
+          box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.13) !important;
+        }
+        .number-error-note {
+          display: block;
+          color: #b42318;
+          background: #fff1f0;
+          border-left: 3px solid #c0392b;
+          border-radius: 2px;
+          padding: 4px 6px;
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 10px;
+          font-weight: 700;
+          line-height: 1.35;
+          white-space: normal;
         }
         
         /* Custom SearchableSelect dropdown styling */
