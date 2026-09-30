@@ -134,7 +134,8 @@ ELENOR_WASTE  = 0.10     // +10% elenor profile
 STP  = HM509   SLF = HM511   SINK = HM510   ELEN = HM519
 DBS  = HM513   (drawer side profile, LH/RH split when qty===2)
 DBC  = HM535   (drawer center profile, flat cut)
-NO_DRILL_PROFILES = { STP, ELEN, SLF, SINK }   // DBS/DBC are drilled-class (NOT in this set)
+HM-518 = HM-518   (single horizontal divider for split 1200x600 stone panels)
+NO_DRILL_PROFILES = { STP, ELEN, SLF, SINK, CTR, HM-518 }   // DBS/DBC are drilled-class (NOT in this set)
 ```
 
 ---

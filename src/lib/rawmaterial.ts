@@ -759,6 +759,10 @@ const PROFILE_CODE_EQUIVALENCES: Record<string, string[]> = {
   "md1": ["md1", "hm517", "ctr"],
   "ctr": ["hm517", "md1", "ctr"],
 
+  "hm518": ["hm518", "hm-518", "divider"],
+  "hm-518": ["hm-518", "hm518", "divider"],
+  "divider": ["divider", "hm518", "hm-518"],
+
   "md1cm1": ["md1cm1", "cm1"],
   "md1cm2": ["md1cm2", "cm2"],
   "md2cm1": ["md2cm1", "cm1"],
@@ -780,6 +784,9 @@ const DEFAULT_PROFILE_NAMES: Record<string, string> = {
   "hm535": "ALU PROF FOR DRAWER BOTTOM CENTER 3000X45X14 ANODISED CHAMPAGNE HM-535 MINA",
   "ctr": "ALU PROF DAP 101 NEW 3000X45.5X24.24 ANODISED CHAMPAGNE HM-517 MINA",
   "hm517": "ALU PROF DAP 101 NEW 3000X45.5X24.24 ANODISED CHAMPAGNE HM-517 MINA",
+  "hm518": "ALU PROF DAP 101 DIVIDER 3000X15X24.24 ANODISED CHAMPAGNE HM-518 MINA",
+  "hm-518": "ALU PROF DAP 101 DIVIDER 3000X15X24.24 ANODISED CHAMPAGNE HM-518 MINA",
+  "divider": "ALU PROF DAP 101 DIVIDER 3000X15X24.24 ANODISED CHAMPAGNE HM-518 MINA",
   
   // Acc/Light
   "skirting": "ALU PROF FOR SKIRTING WITH LIGHT 3000X100X9.8 ANODISED CHAMPAGNE HM-507 MINA",

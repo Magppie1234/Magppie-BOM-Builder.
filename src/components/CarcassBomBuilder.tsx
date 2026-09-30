@@ -2999,6 +2999,12 @@ function splitStonePanelHeight(fullPanelHeight: number): number {
   return Math.max(0, fullPanelHeight / 2 - 2);
 }
 
+const SPLIT_PANEL_DIVIDER_PROFILE = "HM-518";
+
+function splitPanelDividerLengths(width: number): Array<{ len: number; qty: number; name: string }> {
+  return [{ len: Math.max(0, width), qty: 1, name: "Profile Divider (HM-518)" }];
+}
+
 function classifyRowType(pkType: string): string {
   if (pkType === "panel") return "sub_bom";
   if (pkType === "prof") return "component";
@@ -4321,6 +4327,7 @@ function buildFullBomData(
         shFinish, s.code, 1, 0, +(1 * q).toFixed(3), "pcs", stockMap, "sub_bom"));
 
       // Level 3: Panel / Glass (under Parts- SH)
+      let splitFor1200Stone = false;
       if (isGlassShutter) {
         // Glass IS a purchased raw material → direct Level 3 raw material (no panel BOM).
         const glassItemName = `GLASS TOUGH EP ${s.pw}X${s.ph}X5 ${glassColor} SKV`;
@@ -4330,7 +4337,7 @@ function buildFullBomData(
           glassColor, partsShName, 1, 0, +(1 * q).toFixed(3), "pcs", stockMap, "plain"));
       } else {
         const stoneKey = `shutter|${shFinish}|${shStoneThk}`;
-        const splitFor1200Stone = s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap);
+        splitFor1200Stone = s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap);
         const panelHeight = splitFor1200Stone ? splitStonePanelHeight(s.ph) : s.ph;
         const panelQty = splitFor1200Stone ? 2 : 1;
         const panelName = `Panels- SH ${s.pw}x${panelHeight}x${shStoneThk} ${s.design}`;
@@ -4375,6 +4382,19 @@ function buildFullBomData(
         shutterProfileRows.forEach((r) => { r.Level += 1; });
         rows.push(...shutterProfileRows);
       });
+
+      // A 1200x600 stone face taller than 1200mm is split into two panels. The joint is
+      // covered by one dedicated HM-518 divider across the shutter width; HM-517 remains
+      // reserved for the surrounding MD1 frame and drawer centre strips.
+      if (splitFor1200Stone) {
+        const dividerRows = buildProfileBomRows(
+          so, SPLIT_PANEL_DIVIDER_PROFILE, shProfFinish, splitPanelDividerLengths(s.profH),
+          skuSuffix, stockMap, "Shutters", s.code, q, partsShName,
+          selectedRawIds, rawOptionsMap
+        );
+        dividerRows.forEach((r) => { r.Level += 1; });
+        rows.push(...dividerRows);
+      }
 
       // Level 3: Corner Connector (under Parts- SH) — glass vs stone per shutter.
       const cornerName = shutterCornerName(m.fk, s.kind);
@@ -4540,6 +4560,25 @@ function buildFullBomData(
     );
     mainProfileRows.forEach((r) => { r.Level += 1; });
     rows.push(...mainProfileRows);
+
+    if (splitFor1200Stone) {
+      const dividerRows = buildProfileBomRows(
+        so,
+        SPLIT_PANEL_DIVIDER_PROFILE,
+        profFinish,
+        splitPanelDividerLengths(W),
+        skuSuffix,
+        stockMap,
+        "Shutters",
+        vpCode,
+        q,
+        vpPartsShName,
+        selectedRawIds,
+        rawOptionsMap
+      );
+      dividerRows.forEach((r) => { r.Level += 1; });
+      rows.push(...dividerRows);
+    }
 
     if (vp.profile.includes("CM")) {
       const mouldProfile = vp.profile.includes("CM2") ? "CM2" : "CM1";
@@ -6748,7 +6787,7 @@ async function findExistingCompositeByRawMaterial(rawMaterialId: string, itemNam
   return null;
 }
 
-const NO_DRILL_PROFILES = new Set(["STP", "ELEN", "SLF", "SINK", "CTR"]);
+const NO_DRILL_PROFILES = new Set(["STP", "ELEN", "SLF", "SINK", "CTR", SPLIT_PANEL_DIVIDER_PROFILE]);
 
 async function resolveProfileBOM(
   profileCode: string,
@@ -8698,6 +8737,12 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               return rawId;
             };
             const profileGroups = shutterFrameGroups(s, currentModel.fk === "APP");
+            if (splitFor1200Stone) {
+              profileGroups.push({
+                design: SPLIT_PANEL_DIVIDER_PROFILE,
+                lengths: splitPanelDividerLengths(s.profH),
+              });
+            }
             for (const grp of profileGroups) {
               const rawId = await resolveRawProfile(grp.design);
               const setIds = await resolveProfileBOM(
@@ -9514,6 +9559,15 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
               addProfile(grp.design, grp.lengths.reduce((sum, L) => sum + L.len * L.qty, 0))
             );
           }
+
+          const glassFace = isGlassShutterFam(m.fk) && s.kind !== "fixed";
+          const panelFinish = s.kind === "fixed"
+            ? (m.fixedPanelMat || m.shutterMat || m.mat || "STATUARIO")
+            : (m.shutterMat || m.mat || "STATUARIO");
+          const stoneKey = `shutter|${panelFinish}|${shutterStoneThk(panelFinish, s.design)}`;
+          if (!glassFace && s.h > 1200 && selectedStoneIs1200x600(stoneKey, selectedRawIds, rawOptionsMap)) {
+            addProfile(SPLIT_PANEL_DIVIDER_PROFILE, s.profH);
+          }
         });
       }
 
@@ -9616,6 +9670,20 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         profiles[pKey] = { key: pKey, category: "shutter", profileCode: mainProfile, finish: pFinish, lenMeters: 0 };
       }
       profiles[pKey].lenMeters += ((2 * H + 2 * W) / 1000) * q;
+
+      if (splitFor1200Stone) {
+        const dividerKey = `shutter|${SPLIT_PANEL_DIVIDER_PROFILE}|${pFinish}`;
+        if (!profiles[dividerKey]) {
+          profiles[dividerKey] = {
+            key: dividerKey,
+            category: "shutter",
+            profileCode: SPLIT_PANEL_DIVIDER_PROFILE,
+            finish: pFinish,
+            lenMeters: 0,
+          };
+        }
+        profiles[dividerKey].lenMeters += (W / 1000) * q;
+      }
 
       if (vp.profile.includes("CM")) {
         const cmCode = vp.profile.includes("CM2") ? "CM2" : "CM1";
@@ -10049,6 +10117,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             shProf += (piece.len * piece.qty / 1000) * q;
           });
         });
+        if (splitFor1200Stone) {
+          const dividerMeters = (s.profH / 1000) * q;
+          shProf += dividerMeters;
+          profAgg[SPLIT_PANEL_DIVIDER_PROFILE] = (profAgg[SPLIT_PANEL_DIVIDER_PROFILE] || 0) + dividerMeters;
+        }
         shCorner += q;
         hardAgg[s.hinge] = (hardAgg[s.hinge] || 0) + (s.hq || 1) * q;
       });
@@ -10129,7 +10202,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       const fSqft = (splitFor1200Stone ? sqft(pw, splitStonePanelHeight(ph)) * 2 : sqft(pw, ph)) * q;
       const mainProfMm = 2 * H + 2 * W;
       const cmProfMm = vp.profile.includes("CM") ? 2 * Math.max(0, H - 100) + 2 * Math.max(0, W - 100) : 0;
-      const fProf = ((mainProfMm + cmProfMm) / 1000) * q;
+      const dividerProfMm = splitFor1200Stone ? W : 0;
+      const fProf = ((mainProfMm + cmProfMm + dividerProfMm) / 1000) * q;
       
       shSqft += fSqft;
       shProf += fProf;
@@ -10140,6 +10214,9 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       finAgg[finish].pan += (splitFor1200Stone ? 2 : 1) * q;
 
       profAgg[mainProfile] = (profAgg[mainProfile] || 0) + ((2 * H + 2 * W) / 1000) * q;
+      if (splitFor1200Stone) {
+        profAgg[SPLIT_PANEL_DIVIDER_PROFILE] = (profAgg[SPLIT_PANEL_DIVIDER_PROFILE] || 0) + (W / 1000) * q;
+      }
       if (vp.profile.includes("CM")) {
         const cmCode = vp.profile.includes("CM2") ? "CM2" : "CM1";
         profAgg[cmCode] = (profAgg[cmCode] || 0) + ((2 * Math.max(0, H - 100) + 2 * Math.max(0, W - 100)) / 1000) * q;
