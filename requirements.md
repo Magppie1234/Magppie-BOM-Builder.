@@ -634,6 +634,8 @@ All citations are to `src/components/CarcassBomBuilder.tsx` unless noted. Areas 
 
 All logic lives in `src/components/CarcassBomBuilder.tsx` (referred to as `CBB` below) unless noted. UI entry points: header buttons "Export All Combinations (.xlsx)" / "Export All Shutter Codes (.xlsx)" (CBB:8540–8556), and the "⑫ Downloads" card (visible only when the project has ≥1 line) with a Packing/Labels filter dropdown and buttons **Excel BOM · Packing List (.xls) · Labels (PDF) · CSV · copy csv** (CBB:10535–10566), plus a read-only "⑬ CSV Preview" textarea (CBB:10568–10573).
 
+- **BR-EXP-00A (in-app BOM worksheet)**: The Downloads card provides **View / Edit BOM**, which opens the generated `Full BOM` rows in an Excel-style grid without downloading. `SO Qty`, `Actual Qty`, and available `Pcs` cells are editable. Edited cells are visually marked, recalculate deficit/status and piece count where applicable, and feed Print plus the next Excel BOM download (including dependent sheets). Edits are session-only, searchable, resettable, and never change cabinet geometry.
+
 ---
 
 ### 1. Full BOM Excel workbook ("Excel BOM" button)
@@ -872,8 +874,9 @@ If the selected stone item lacks positive `cf_height`/`cf_width`, the detail box
 - If nothing matches the thickness, last resort returns core-finish matches of any thickness (paired with the UI's "No matching {t}mm stone items" style warnings); if every query fails at network level the error is thrown so the UI shows the retry state (src/lib/rawmaterial.ts:681-686).
 
 #### BR-Z13: Profile search matching rules (`searchProfileItems`)
-- Profile-code equivalences (either alias matches): HM509↔STP, HM511↔SLF, HM510↔SINK, HM519↔ELEN, HM513↔DBS, HM535↔DBC; MD1CM1/MD2CM1→CM1, MD1CM2/MD2CM2→CM2; hyphenated and non-hyphenated `hm###`/`hm-###` forms are both searched (src/lib/rawmaterial.ts:688-711, 772-781).
+- Profile-code equivalences (either alias matches): HM509↔STP/stepper/MG-01, HM511↔SLF, HM510↔SINK, HM519↔ELEN, HM513↔DBS, HM535↔DBC; shutter designs resolve through the profile reference workbook: MD1/CTR↔HM517, MD2/Titus↔HM527 (alongside MD1/HM517 edges), MD3↔SUN2004, CL1↔HM501, CL2↔HM502, CM1↔HM530, CM2↔HM531, NEON20↔HM532, NEON20-with-handle↔HM533. Filler HM504 and accessory/light profiles HM507/HM512/HM514/HM534 are also aliased. Hyphenated and non-hyphenated `hm###`/`hm-###` forms are both searched (src/lib/rawmaterial.ts).
 - All aliases plus the finish are searched concurrently; results deduped; a match requires profile-code presence in cf_profile_code/name/sku AND finish presence in cf_finish/name (src/lib/rawmaterial.ts:783-825).
+- After profile options load, the picker automatically selects the item only when exactly one real catalogue item carries the profile's physical reference code (for example STP→HM-509 or MD1→HM-517). Existing valid user selections are preserved; multiple same-reference alternatives and synthetic create-items remain unselected for explicit user choice.
 - Fallback 1: relax finish, match code in name/SKU only. Fallback 2: return a synthetic option named "{DEFAULT_PROFILE_NAME} (Not in Zoho - Will Create)" with id `MOCK_CREATE|{name}`; the default names table maps codes to canonical item names (e.g. `elen/hm519` → "ALU PROF FOR ELENOR 3000X15X15 ANODISED CHAMPAGNE HM-519 MINA", `stp/hm509` → "ALU PROF FOR STEPPER 3000X31.5X22 ANODISED CHAMPAGNE MG-01 VARN", `slf/hm511` → "ALU PROF FOR SHELF 3000X22X1.2 W/OUT ANODISED HM-511 VARN", `sink/hm510` → "ALU PROF FOR SINK NEW 3000X27X22 ANODISED CHAMPAGNE HM-510 MINA", `dbs/hm513`, `dbc/hm535`, plus skirting/duplay/lprofile/grand/md1/md2/cl1/cl2/cm1/cm2/neon20 entries); non-CHAMPAGNE finishes substitute the finish word ("WITHOUT/W/OUT/UNANODISED" replaces the whole "ANODISED CHAMPAGNE") (src/lib/rawmaterial.ts:713-857).
 
 #### BR-Z14: Hardware search

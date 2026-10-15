@@ -737,56 +737,95 @@ export async function searchStoneItems(finish: string, stoneThickness: string, e
 }
 
 const PROFILE_CODE_EQUIVALENCES: Record<string, string[]> = {
-  "hm509": ["hm509", "stp"],
-  "stp": ["hm509", "stp"],
+  // Carcass profiles. The builder emits short semantic codes (STP, SLF, ...), while the
+  // catalogue stores the physical HM code in the item name. Keep both forms here so the
+  // local item catalogue is searched by a value it actually contains.
+  "hm509": ["hm509", "mg01", "mg-01"],
+  "stp": ["hm509", "mg01", "mg-01"],
   
-  "hm511": ["hm511", "slf"],
-  "slf": ["hm511", "slf"],
+  "hm511": ["hm511"],
+  "slf": ["hm511"],
   
-  "hm510": ["hm510", "sink"],
-  "sink": ["hm510", "sink"],
+  "hm510": ["hm510"],
+  "sink": ["hm510"],
   
-  "hm519": ["hm519", "elen"],
-  "elen": ["hm519", "elen"],
+  "hm519": ["hm519"],
+  "elen": ["hm519"],
   
-  "hm513": ["hm513", "dbs"],
-  "dbs": ["hm513", "dbs"],
+  "hm513": ["hm513"],
+  "dbs": ["hm513"],
   
-  "hm535": ["hm535", "dbc"],
-  "dbc": ["hm535", "dbc"],
+  "hm535": ["hm535"],
+  "dbc": ["hm535"],
 
-  "hm517": ["hm517", "md1", "ctr"],
-  "md1": ["md1", "hm517", "ctr"],
-  "ctr": ["hm517", "md1", "ctr"],
+  // Shutter/profile design -> physical catalogue profile.
+  "hm517": ["hm517"],
+  "md1": ["hm517"],
+  "sun2004": ["sun2004"],
+  "md3": ["sun2004"],
+  "ctr": ["hm517"],
+
+  "hm527": ["hm527"],
+  "md2": ["hm527"],
+
+  "hm501": ["hm501"],
+  "cl1": ["hm501"],
+  "hm502": ["hm502"],
+  "cl2": ["hm502"],
+
+  "hm530": ["hm530"],
+  "cm1": ["hm530"],
+  "hm531": ["hm531"],
+  "cm2": ["hm531"],
+
+  "hm532": ["hm532"],
+  "neon20": ["hm532"],
+  "hm533": ["hm533"],
+  "neon20handle": ["hm533"],
+
+  "hm504": ["hm504"],
+  "filler": ["hm504"],
 
   "hm518": ["hm518", "hm-518", "divider"],
   "hm-518": ["hm-518", "hm518", "divider"],
   "divider": ["divider", "hm518", "hm-518"],
 
-  "md1cm1": ["md1cm1", "cm1"],
-  "md1cm2": ["md1cm2", "cm2"],
-  "md2cm1": ["md2cm1", "cm1"],
-  "md2cm2": ["md2cm2", "cm2"]
+  // Combined designs are emitted as separate main-frame and moulding buckets. If a legacy
+  // combined code reaches this lookup, resolve only its moulding bucket (matching old behavior).
+  "md1cm1": ["hm530"],
+  "md1cm2": ["hm531"],
+  "md2cm1": ["hm530"],
+  "md2cm2": ["hm531"],
+  "md3cm1": ["hm530"],
+  "md3cm2": ["hm531"],
+
+  // Accessory/light profiles can also flow through a raw-profile bucket.
+  "skirting": ["hm507"],
+  "duplay": ["hm534"],
+  "lprofile": ["hm514"],
+  "grand": ["hm512"]
 };
 
 const DEFAULT_PROFILE_NAMES: Record<string, string> = {
   "elen": "ALU PROF FOR ELENOR 3000X15X15 ANODISED CHAMPAGNE HM-519 MINA",
   "hm519": "ALU PROF FOR ELENOR 3000X15X15 ANODISED CHAMPAGNE HM-519 MINA",
-  "stp": "ALU PROF FOR STEPPER 3000X31.5X22 ANODISED CHAMPAGNE MG-01 VARN",
-  "hm509": "ALU PROF FOR STEPPER 3000X31.5X22 ANODISED CHAMPAGNE MG-01 VARN",
+  "stp": "ALU PROF FOR STEPPER 3000X31.5X22 ANODISED CHAMPAGNE HM-509 MINA",
+  "hm509": "ALU PROF FOR STEPPER 3000X31.5X22 ANODISED CHAMPAGNE HM-509 MINA",
   "slf": "ALU PROF FOR SHELF 3000X22X1.2 W/OUT ANODISED HM-511 VARN",
   "hm511": "ALU PROF FOR SHELF 3000X22X1.2 W/OUT ANODISED HM-511 VARN",
   "sink": "ALU PROF FOR SINK NEW 3000X27X22 ANODISED CHAMPAGNE HM-510 MINA",
   "hm510": "ALU PROF FOR SINK NEW 3000X27X22 ANODISED CHAMPAGNE HM-510 MINA",
   "dbs": "ALU PROF DRAWER BOTTOM SIDE PROFILE 3000X18X16 ANODISED CHAMPAGNE HM-513 MINA",
   "hm513": "ALU PROF DRAWER BOTTOM SIDE PROFILE 3000X18X16 ANODISED CHAMPAGNE HM-513 MINA",
-  "dbc": "ALU PROF FOR DRAWER BOTTOM CENTER 3000X45X14 ANODISED CHAMPAGNE HM-535 MINA",
-  "hm535": "ALU PROF FOR DRAWER BOTTOM CENTER 3000X45X14 ANODISED CHAMPAGNE HM-535 MINA",
+  "dbc": "ALU PROF DRAWER BOTTOM PROFILE 3000X30X6 ANODISED CHAMPAGNE HM-535 MINA",
+  "hm535": "ALU PROF DRAWER BOTTOM PROFILE 3000X30X6 ANODISED CHAMPAGNE HM-535 MINA",
   "ctr": "ALU PROF DAP 101 NEW 3000X45.5X24.24 ANODISED CHAMPAGNE HM-517 MINA",
   "hm517": "ALU PROF DAP 101 NEW 3000X45.5X24.24 ANODISED CHAMPAGNE HM-517 MINA",
   "hm518": "ALU PROF DAP 101 DIVIDER 3000X15X24.24 ANODISED CHAMPAGNE HM-518 MINA",
   "hm-518": "ALU PROF DAP 101 DIVIDER 3000X15X24.24 ANODISED CHAMPAGNE HM-518 MINA",
   "divider": "ALU PROF DAP 101 DIVIDER 3000X15X24.24 ANODISED CHAMPAGNE HM-518 MINA",
+  "hm504": "ALU PROF FILLER 3000X76X8.2 ANODISED CHAMPAGNE HM-504 MINA",
+  "filler": "ALU PROF FILLER 3000X76X8.2 ANODISED CHAMPAGNE HM-504 MINA",
   
   // Acc/Light
   "skirting": "ALU PROF FOR SKIRTING WITH LIGHT 3000X100X9.8 ANODISED CHAMPAGNE HM-507 MINA",
@@ -796,12 +835,14 @@ const DEFAULT_PROFILE_NAMES: Record<string, string> = {
   
   // Shutter designs
   "md1": "ALU PROF DAP 101 NEW 3000X45.5X24.24 ANODISED CHAMPAGNE HM-517 MINA",
+  "md3": "ALU PROFILE DAP101 1MM COLLOR FOR 9MM SUN2004 SAN",
   "md2": "ALU PROF DAP 107 TITUS HANDLE 3000X45.5X40 ANODISED CHAMPAGNE HM-527 MINA",
   "cl1": "ALU PROF CLASSIC 3000X70X31 ANODISED CHAMPAGNE HM-501 MINA",
   "cl2": "ALU PROF CLASSIC 3000X78X16.87 ANODISED CHAMPAGNE HM-502 MINA",
   "cm1": "ALU PROF CLASSIC MOULDING 3000X25X9 ANODISED CHAMPAGNE HM-530 MINA",
   "cm2": "ALU PROF CLASSIC MOULDING 3000X25X9 ANODISED CHAMPAGNE HM-531 MINA",
-  "neon20": "ALU PROF NEON 20 HANDLE 3000X40X19.5 ANODISED CHAMPAGNE HM-533 MINA"
+  "neon20": "ALU PROF NEON 20 3000X24.24X19.5 ANODISED CHAMPAGNE HM-532 MINA",
+  "neon20handle": "ALU PROF NEON 20 HANDLE 3000X40X19.5 ANODISED CHAMPAGNE HM-533 MINA"
 };
 
 function getDefaultProfileName(profileCode: string, finish: string): string | null {
@@ -827,6 +868,34 @@ function getDefaultProfileName(profileCode: string, finish: string): string | nu
     }
   }
   return defaultName;
+}
+
+/**
+ * Return the one unambiguous catalogue item that carries the physical reference code for a
+ * builder profile (for example STP -> HM-509 or MD1 -> HM-517). Relative/fallback choices are
+ * deliberately not selected when more than one physical-code match remains.
+ */
+export function findPreferredProfileItemId(items: ItemDetail[], profileCode: string): string {
+  const cleanCode = profileCode.toLowerCase().trim();
+  const primaryReference = (PROFILE_CODE_EQUIVALENCES[cleanCode] || [cleanCode])[0];
+  const aliases = new Set([primaryReference]);
+  if (/^hm-?\d+$/.test(primaryReference)) {
+    const digits = primaryReference.replace(/[^0-9]/g, "");
+    aliases.add(`hm${digits}`);
+    aliases.add(`hm-${digits}`);
+  }
+
+  const matches = items.filter((item) => {
+    if (!item.item_id || item.item_id.startsWith("MOCK_CREATE|")) return false;
+    const haystack = [
+      getCfValue(item, "cf_profile_code"),
+      item.name || item.item_name || "",
+      item.sku || "",
+    ].join(" ").toLowerCase();
+    return Array.from(aliases).some((alias) => haystack.includes(alias));
+  });
+
+  return matches.length === 1 ? matches[0].item_id : "";
 }
 
 export async function searchProfileItems(finish: string, profileCode: string): Promise<ItemDetail[]> {

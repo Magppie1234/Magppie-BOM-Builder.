@@ -5,7 +5,7 @@ import * as XLSX from "xlsx-js-style";
 import { jsPDF } from "jspdf";
 import JsBarcode from "jsbarcode";
 import QRCode from "qrcode";
-import { searchStoneItems, searchProfileItems, searchHardwareItems } from "@/lib/rawmaterial";
+import { findPreferredProfileItemId, searchStoneItems, searchProfileItems, searchHardwareItems } from "@/lib/rawmaterial";
 import stoneFinishesData from "@/data/stone_finishes.json";
 import profileFinishesData from "@/data/profile_finishes.json";
 import planningFinishesData from "@/data/planning_finishes.json";
@@ -2858,6 +2858,81 @@ type FullBomRow = {
   _type: string;
 };
 
+type BomQuantityOverride = {
+  soQty?: number;
+  actualQty?: number;
+  pcs?: number;
+};
+
+type BomQuantityOverrides = Record<string, BomQuantityOverride>;
+
+const BOM_WORKSHEET_COLUMNS: Array<{ key: keyof FullBomRow; label: string; minWidth?: number }> = [
+  { key: "SO", label: "SO", minWidth: 90 },
+  { key: "Elevation", label: "Elevation", minWidth: 80 },
+  { key: "Main Group", label: "Main Group", minWidth: 100 },
+  { key: "Sub Group", label: "Sub Group", minWidth: 110 },
+  { key: "Level", label: "Level", minWidth: 56 },
+  { key: "Item", label: "Item", minWidth: 320 },
+  { key: "SKU", label: "SKU", minWidth: 180 },
+  { key: "Type", label: "Type", minWidth: 90 },
+  { key: "Height", label: "Height", minWidth: 76 },
+  { key: "Width", label: "Width", minWidth: 76 },
+  { key: "Depth", label: "Depth", minWidth: 76 },
+  { key: "Thickness", label: "Thickness", minWidth: 84 },
+  { key: "Finish", label: "Finish", minWidth: 120 },
+  { key: "Grain", label: "Grain", minWidth: 70 },
+  { key: "CF Type", label: "CF Type", minWidth: 150 },
+  { key: "Profile Code", label: "Profile Code", minWidth: 100 },
+  { key: "SO Qty", label: "SO Qty", minWidth: 88 },
+  { key: "Waste %", label: "Waste %", minWidth: 78 },
+  { key: "Actual Qty", label: "Actual Qty", minWidth: 96 },
+  { key: "Pcs", label: "Pcs", minWidth: 78 },
+  { key: "In Stock", label: "In Stock", minWidth: 84 },
+  { key: "Eff. Stock", label: "Eff. Stock", minWidth: 88 },
+  { key: "Deficit", label: "Deficit", minWidth: 78 },
+  { key: "Unit", label: "Unit", minWidth: 65 },
+  { key: "Status", label: "Status", minWidth: 90 },
+];
+
+function fullBomRowKeys(rows: FullBomRow[]): string[] {
+  const seen = new Map<string, number>();
+  return rows.map((row) => {
+    const fingerprint = [
+      row.SO, row.Elevation, row["Main Group"], row["Sub Group"], row.Level,
+      row.Item.trim(), row.SKU, row.Type, row.Height, row.Width, row.Depth,
+      row.Thickness, row.Finish, row["CF Type"], row["Profile Code"], row.Unit,
+    ].join("\u241f");
+    const occurrence = (seen.get(fingerprint) || 0) + 1;
+    seen.set(fingerprint, occurrence);
+    return `${fingerprint}\u241e${occurrence}`;
+  });
+}
+
+function applyBomQuantityOverrides(rows: FullBomRow[], overrides: BomQuantityOverrides): FullBomRow[] {
+  const keys = fullBomRowKeys(rows);
+  return rows.map((row, index) => {
+    const override = overrides[keys[index]];
+    if (!override) return row;
+
+    const soQty = override.soQty ?? row["SO Qty"];
+    const actualQty = override.actualQty ?? row["Actual Qty"];
+    let pcs: number | string = override.pcs ?? row.Pcs;
+    if (override.pcs === undefined && override.actualQty !== undefined && row.Pcs !== "-") {
+      const slabArea = parseSlabArea(row.Item);
+      if (slabArea > 0) pcs = Math.round((actualQty / slabArea) * 100) / 100;
+    }
+    const deficit = Math.max(0, actualQty - row["Eff. Stock"]);
+    const status = deficit <= 0 ? "In Stock" : "Out of Stock";
+    return { ...row, "SO Qty": soQty, "Actual Qty": actualQty, Pcs: pcs, Deficit: deficit, Status: status };
+  });
+}
+
+function invalidBomQuantityOverrides(overrides: BomQuantityOverrides): boolean {
+  return Object.values(overrides).some((entry) =>
+    [entry.soQty, entry.actualQty, entry.pcs].some((value) => value !== undefined && (!Number.isFinite(value) || value < 0))
+  );
+}
+
 type OosRow = {
   SO: string;
   "Main Group": string;
@@ -5292,13 +5367,16 @@ function exportBuilderExcel(
   // Combinations page to bundle many cabinet workbooks into one ZIP).
   returnWorkbook: boolean = false,
   // Per project-line count (0/1/2) of J/C-type handles → INSERT NYLON per side panel.
-  jcByLine: number[] = []
+  jcByLine: number[] = [],
+  // In-app worksheet edits override only the generated BOM quantities. Cabinet geometry and
+  // formulas remain intact; every downstream workbook sheet is rebuilt from these edited rows.
+  quantityOverrides: BomQuantityOverrides = {}
 ): XLSX.WorkBook | void {
   const wb = XLSX.utils.book_new();
   const so = soNumber || "Project";
 
   // Sheet 1: Full BOM
-  const fullBom = buildFullBomData(
+  const fullBom = applyBomQuantityOverrides(buildFullBomData(
     project,
     so,
     stockMap || {},
@@ -5314,7 +5392,7 @@ function exportBuilderExcel(
     getShutterProfileForZone,
     getProfileColorForZone,
     jcByLine
-  );
+  ), quantityOverrides);
   if (fullBom.length) {
     // Serial number per project line item (top-level master), carried onto its sub-rows —
     // not a running number per BOM-tree row.
@@ -6310,6 +6388,142 @@ function EditableNumberInput({
       />
       {showError && <span className="number-error-note" role="alert">{error}</span>}
     </span>
+  );
+}
+
+interface BomWorksheetModalProps {
+  rows: FullBomRow[];
+  overrides: BomQuantityOverrides;
+  salesOrder: string;
+  onQuantityChange: (rowKey: string, field: keyof BomQuantityOverride, value: number) => void;
+  onReset: () => void;
+  onDownload: () => void;
+  onClose: () => void;
+}
+
+function BomWorksheetModal({
+  rows,
+  overrides,
+  salesOrder,
+  onQuantityChange,
+  onReset,
+  onDownload,
+  onClose,
+}: BomWorksheetModalProps) {
+  const [search, setSearch] = useState("");
+  const keys = useMemo(() => fullBomRowKeys(rows), [rows]);
+  const numberedRows = useMemo(() => {
+    let serial = 0;
+    return rows.map((row, index) => {
+      if (row.Level === 0) serial += 1;
+      return { row, rowKey: keys[index], serial, index };
+    });
+  }, [rows, keys]);
+  const normalizedSearch = search.trim().toLowerCase();
+  const visibleRows = normalizedSearch
+    ? numberedRows.filter(({ row }) => BOM_WORKSHEET_COLUMNS.some(({ key }) => String(row[key] ?? "").toLowerCase().includes(normalizedSearch)))
+    : numberedRows;
+  const hasInvalidQuantity = invalidBomQuantityOverrides(overrides);
+
+  const printWorksheet = () => {
+    const popup = window.open("", "_blank", "width=1400,height=900");
+    if (!popup) {
+      alert("Please allow pop-ups so the BOM print window can open.");
+      return;
+    }
+    const header = ["S. No.", ...BOM_WORKSHEET_COLUMNS.map((column) => column.label)]
+      .map((label) => `<th>${escapeHtml(label)}</th>`).join("");
+    const body = visibleRows.map(({ row, serial }) => {
+      const fill = ROW_TYPE_FILLS[row._type]?.fgColor.rgb || "FFFFFF";
+      const cells = [serial, ...BOM_WORKSHEET_COLUMNS.map(({ key }) => row[key])]
+        .map((value) => `<td>${escapeHtml(value)}</td>`).join("");
+      return `<tr style="background:#${fill}">${cells}</tr>`;
+    }).join("");
+    popup.document.write(`<!doctype html><html><head><title>BOM ${escapeHtml(salesOrder)}</title><style>
+      @page{size:A3 landscape;margin:8mm}body{font-family:Arial,sans-serif;color:#222;margin:0}h1{font-size:16px;margin:0 0 3px}p{font-size:10px;margin:0 0 8px;color:#555}table{border-collapse:collapse;width:100%;font-size:7px}thead{display:table-header-group}th{background:#24211d;color:#fff;position:sticky;top:0}th,td{border:1px solid #b9b3aa;padding:3px 4px;text-align:left;vertical-align:top;white-space:pre-wrap}tr{break-inside:avoid}.qty{text-align:right}
+    </style></head><body><h1>Full BOM</h1><p>Sales order: ${escapeHtml(salesOrder)} · ${visibleRows.length} row(s)</p><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();};<\/script></body></html>`);
+    popup.document.close();
+  };
+
+  const quantityCell = (
+    row: FullBomRow,
+    rowKey: string,
+    field: keyof BomQuantityOverride,
+    value: number,
+    label: string,
+  ) => {
+    const edited = overrides[rowKey]?.[field] !== undefined;
+    return (
+      <EditableNumberInput
+        value={value}
+        min={0}
+        step="any"
+        fieldLabel={`${label} for ${row.Item.trim() || row.SKU}`}
+        onValueChange={(next) => onQuantityChange(rowKey, field, next)}
+        style={{
+          width: 78,
+          padding: "4px 5px",
+          border: `1px solid ${edited ? "#d49a24" : "#cfc8bc"}`,
+          borderRadius: 2,
+          background: edited ? "#fff4d6" : "#fff",
+          fontFamily: "'IBM Plex Mono', monospace",
+          fontSize: 10,
+          textAlign: "right",
+        }}
+      />
+    );
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="BOM Excel view" style={{ position: "fixed", inset: 0, zIndex: 1300, background: "rgba(28,26,23,.58)", padding: 18, display: "flex", alignItems: "stretch", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 1900, minHeight: 0, background: "#f8f5ef", border: "1px solid #8e877b", borderRadius: 8, boxShadow: "0 18px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ padding: "12px 14px", background: "#24211d", color: "#fff", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ marginRight: "auto" }}>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 19 }}>Full BOM worksheet</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#d7d0c5" }}>{salesOrder} · {rows.length} rows · edited cells are amber</div>
+          </div>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search worksheet…" aria-label="Search BOM worksheet" style={{ width: 230, padding: "7px 9px", borderRadius: 4, border: "1px solid #756f65", background: "#fff", color: "#24211d", fontSize: 12 }} />
+          <button className="clr" onClick={onReset} disabled={Object.keys(overrides).length === 0}>Reset edits</button>
+          <button className="clr" onClick={printWorksheet}>Print</button>
+          <button className="addbtn" onClick={onDownload} disabled={hasInvalidQuantity}>Download Excel</button>
+          <button className="clr" onClick={onClose} aria-label="Close BOM worksheet">Close</button>
+        </div>
+        {hasInvalidQuantity && <div style={{ padding: "8px 14px", background: "#fde7e2", color: "#a32920", fontSize: 11, fontWeight: 700 }}>A quantity is below zero. Correct the highlighted value before downloading.</div>}
+        <div style={{ padding: "7px 12px", borderBottom: "1px solid #d8d1c5", background: "#eee9df", fontSize: 10.5, color: "#625b50" }}>
+          Edit SO Qty, Actual Qty, or Pcs directly. Changes are session-only and are used by Print and the next Excel BOM download.
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "#fff" }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "max-content", minWidth: "100%", fontFamily: "'IBM Plex Mono', monospace", fontSize: 10 }}>
+            <thead>
+              <tr>
+                <th style={{ position: "sticky", top: 0, left: 0, zIndex: 5, background: "#24211d", color: "#fff", minWidth: 58, padding: "7px 6px", borderRight: "1px solid #5c564d", borderBottom: "1px solid #5c564d" }}>S. No.</th>
+                {BOM_WORKSHEET_COLUMNS.map((column) => (
+                  <th key={column.key} style={{ position: "sticky", top: 0, zIndex: 4, background: "#24211d", color: "#fff", minWidth: column.minWidth, padding: "7px 6px", borderRight: "1px solid #5c564d", borderBottom: "1px solid #5c564d", textAlign: "left", whiteSpace: "nowrap" }}>{column.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map(({ row, rowKey, serial, index }) => {
+                const fill = `#${ROW_TYPE_FILLS[row._type]?.fgColor.rgb || "FFFFFF"}`;
+                return (
+                  <tr key={rowKey} style={{ background: fill }}>
+                    <td style={{ position: "sticky", left: 0, zIndex: 2, background: fill, padding: "5px 6px", borderRight: "1px solid #c9c2b7", borderBottom: "1px solid #ddd6ca", textAlign: "center" }}>{serial}</td>
+                    {BOM_WORKSHEET_COLUMNS.map((column) => {
+                      let content: React.ReactNode = String(row[column.key] ?? "");
+                      if (column.key === "SO Qty") content = quantityCell(row, rowKey, "soQty", row["SO Qty"], "SO Qty");
+                      if (column.key === "Actual Qty") content = quantityCell(row, rowKey, "actualQty", row["Actual Qty"], "Actual Qty");
+                      if (column.key === "Pcs" && row.Pcs !== "-") content = quantityCell(row, rowKey, "pcs", Number(row.Pcs) || 0, "Pcs");
+                      return <td key={`${index}-${column.key}`} style={{ padding: "4px 6px", borderRight: "1px solid #ddd6ca", borderBottom: "1px solid #ddd6ca", whiteSpace: column.key === "Item" ? "pre" : "nowrap", verticalAlign: "top" }}>{content}</td>;
+                    })}
+                  </tr>
+                );
+              })}
+              {visibleRows.length === 0 && <tr><td colSpan={BOM_WORKSHEET_COLUMNS.length + 1} style={{ padding: 30, textAlign: "center", color: "#857d71" }}>No BOM rows match this search.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -7397,6 +7611,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const [activeTab, setActiveTab] = useState<"pk" | "raw" | "proj">(soMode ? "proj" : "pk");
   const [copiedCode, setCopiedCode] = useState<boolean>(false);
   const [copiedCsv, setCopiedCsv] = useState<boolean>(false);
+  const [bomViewerOpen, setBomViewerOpen] = useState<boolean>(false);
+  const [bomQuantityOverrides, setBomQuantityOverrides] = useState<BomQuantityOverrides>({});
 
   // Accessories state
   const [accessoryRows, setAccessoryRows] = useState<AccessorySubformRow[]>([]);
@@ -9912,12 +10128,15 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
             }
             setRawOptionsMap((prev) => ({ ...prev, [key]: items }));
             setRawErrorMap((prev) => { const next = { ...prev }; delete next[key]; return next; });
-            // Profiles can have close catalogue alternatives (for example HM-517 names with or
-            // without "ANODISED"). Never guess: retain a valid user choice, otherwise leave the
-            // picker empty so the user explicitly selects the required catalogue item.
+            // Auto-select only when exactly one result carries this builder code's physical
+            // reference (STP -> HM-509, MD1 -> HM-517, etc.). If several reference matches remain,
+            // keep the picker blank so the user can choose rather than silently guessing.
             setSelectedRawIds((prev) => {
               const current = prev[key];
-              if (!current || items.some((item) => item.item_id === current)) return prev;
+              if (current && items.some((item) => item.item_id === current)) return prev;
+              const preferredId = findPreferredProfileItemId(items, profileCode);
+              if (preferredId) return { ...prev, [key]: preferredId };
+              if (!current) return prev;
               const next = { ...prev };
               delete next[key];
               return next;
@@ -10645,7 +10864,58 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   // no per-cabinet J/C count anymore (feature retired with the accessory-section redesign).
   const computeJcByLine = (): number[] => [];
 
+  const bomWorksheetBaseRows = useMemo(() => {
+    if (!bomViewerOpen) return [];
+    return buildFullBomData(
+      project,
+      selectedSo?.salesorder_number || "Project",
+      stockMap,
+      selectedRawIds,
+      rawOptionsMap,
+      fillers,
+      visiblePanels,
+      backsplashes,
+      countertops,
+      getDefaultShutterShadeForZone,
+      getDefaultShutterHeightForZone,
+      getDefaultCabinetDepthForZone,
+      getShutterProfileForZone,
+      getProfileColorForZone,
+      computeJcByLine()
+    );
+  }, [
+    bomViewerOpen,
+    project,
+    selectedSo?.salesorder_number,
+    stockMap,
+    selectedRawIds,
+    rawOptionsMap,
+    fillers,
+    visiblePanels,
+    backsplashes,
+    countertops,
+    shutterMat,
+    design,
+    shutterProfileColor,
+  ]);
+  const bomWorksheetRows = useMemo(
+    () => applyBomQuantityOverrides(bomWorksheetBaseRows, bomQuantityOverrides),
+    [bomWorksheetBaseRows, bomQuantityOverrides]
+  );
+
+  const updateBomWorksheetQuantity = (rowKey: string, field: keyof BomQuantityOverride, value: number) => {
+    setBomQuantityOverrides((current) => ({
+      ...current,
+      [rowKey]: { ...current[rowKey], [field]: value },
+    }));
+  };
+
   const handleExcelDownload = () => {
+    if (invalidBomQuantityOverrides(bomQuantityOverrides)) {
+      window.dispatchEvent(new Event("builder-number-validation"));
+      alert("The BOM contains a quantity below zero. Correct it before downloading Excel.");
+      return;
+    }
     const accExport = buildAccessoryExportRows();
     exportBuilderExcel(
       project,
@@ -10664,7 +10934,8 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       getShutterProfileForZone,
       getProfileColorForZone,
       false,
-      computeJcByLine()
+      computeJcByLine(),
+      bomQuantityOverrides
     );
   };
 
@@ -13117,6 +13388,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                     </select>
                   </div>
                   <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                    <button className="addbtn" onClick={() => setBomViewerOpen(true)} style={{ fontSize: 11 }}>View / Edit BOM</button>
                     <button className="addbtn" onClick={handleExcelDownload} style={{ fontSize: 11 }}>Excel BOM</button>
                     <button className="addbtn" onClick={handlePackingDownload} style={{ fontSize: 11 }}>Packing List (.xlsx)</button>
                     <button className="addbtn" onClick={handleLabelsDownload} style={{ fontSize: 11 }}>Labels (PDF)</button>
@@ -13138,6 +13410,18 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         </div>
       </div>
       <footer className="builder-footer">Base zone · v4 — single-unit BoM + multi-unit project consolidation. Project list is session-only.</footer>
+
+      {bomViewerOpen && (
+        <BomWorksheetModal
+          rows={bomWorksheetRows}
+          overrides={bomQuantityOverrides}
+          salesOrder={selectedSo?.salesorder_number || "Project"}
+          onQuantityChange={updateBomWorksheetQuantity}
+          onReset={() => setBomQuantityOverrides({})}
+          onDownload={handleExcelDownload}
+          onClose={() => setBomViewerOpen(false)}
+        />
+      )}
 
       {isFinishModalOpen && (
         <div className="finish-modal-backdrop">
