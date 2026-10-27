@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback, Fragment, type CSSProperties } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, Fragment, type CSSProperties, type FormEvent } from "react";
 import * as XLSX from "xlsx-js-style";
 import { jsPDF } from "jspdf";
 import JsBarcode from "jsbarcode";
@@ -334,6 +334,20 @@ interface ProjectLine {
   upCarcass?: string;        // carcass finish
   upProfile?: string;        // profile colour
 }
+
+type PlanningItem = {
+  key: string;
+  kind: "carcass" | "shutter" | "hardware";
+  group: string;
+  name: string;
+  qty: number;
+  uom?: string;
+  colour?: string;
+  pack?: string;
+  pcs?: number;
+  dim?: string;
+  boxDim?: string;
+};
 
 type PlanningPdfCabinet = {
   page: number; elevation: string; sourceLabel: string;
@@ -5776,6 +5790,116 @@ function isDrawerBoxPack(name: string): boolean {
   return /Drawer Box/i.test(name);
 }
 
+/** Flat, dispatchable packing-list rows mirrored into the Zoho Planning record. */
+function buildPlanningItems(project: ProjectLine[]): PlanningItem[] {
+  const items: PlanningItem[] = [];
+  let packNum = 0;
+  const groupOf = (model: CarcassModel, lineIndex: number, qty: number) =>
+    `${String.fromCharCode(65 + lineIndex)}. ${model.code} ×${qty}`;
+
+  project.forEach((line, lineIndex) => {
+    const model = line.m;
+    const carcassRows = model.pkRows.filter((row) =>
+      row[0] !== "shut" && row[0] !== "hard" && row[0] !== "cons" && !isDrawerBoxPack(row[1]) &&
+      (row[1].startsWith("Set of Parts-") || /shelf/i.test(row[1])));
+    carcassRows.forEach((row, rowIndex) => {
+      const [, name, dimensions, qty] = row;
+      const isSet = name.toLowerCase().includes("set of parts");
+      const totalBoxes = (typeof qty === "number" ? qty : 1) * line.qty;
+      for (let box = 0; box < totalBoxes; box += 1) {
+        packNum += 1;
+        items.push({
+          key: `carcass:${lineIndex}:${rowIndex}:${box}`,
+          kind: "carcass",
+          group: groupOf(model, lineIndex, line.qty),
+          name,
+          qty: 1,
+          uom: "BOX",
+          colour: model.carcassMat || model.mat || "-",
+          pack: `PACK - ${packNum}`,
+          pcs: isSet ? 2 : 1,
+          dim: dimensions || "",
+          boxDim: dimensions ? calcBoxDimension(dimensions, isSet) : "",
+        });
+      }
+    });
+  });
+
+  project.forEach((line, lineIndex) => {
+    const model = line.m;
+    (model.shutters || []).forEach((shutter, shutterIndex) => {
+      const isGlass = isGlassShutterFam(model.fk) && shutter.kind !== "fixed";
+      const thickness = shThkOf(shutter.design, isGlass);
+      for (let box = 0; box < line.qty; box += 1) {
+        packNum += 1;
+        items.push({
+          key: `shutter:${lineIndex}:${shutterIndex}:${box}`,
+          kind: "shutter",
+          group: groupOf(model, lineIndex, line.qty),
+          name: shutter.code,
+          qty: 1,
+          uom: "BOX",
+          colour: model.shutterMat || model.mat || "-",
+          pack: `PACK - ${packNum}`,
+          pcs: 1,
+          dim: `${shutter.pw}x${shutter.ph}x${thickness}`,
+          boxDim: calcBoxDimension(`${shutter.w}x${shutter.h}x${thickness}`, false),
+        });
+      }
+    });
+
+    model.pkRows.filter((row) => row[0] === "panel" && isDrawerBoxPack(row[1])).forEach((row, rowIndex) => {
+      const [, name, dimensions, qty] = row;
+      const isSet = name.toLowerCase().includes("set of parts");
+      const realDimensions = dimensions && dimensions !== "Set" ? dimensions : "";
+      const totalBoxes = (typeof qty === "number" ? qty : 1) * line.qty;
+      for (let box = 0; box < totalBoxes; box += 1) {
+        packNum += 1;
+        items.push({
+          key: `drawer:${lineIndex}:${rowIndex}:${box}`,
+          kind: "shutter",
+          group: groupOf(model, lineIndex, line.qty),
+          name,
+          qty: 1,
+          uom: "BOX",
+          colour: model.shutterMat || model.mat || "-",
+          pack: `PACK - ${packNum}`,
+          pcs: isSet ? 2 : 1,
+          dim: realDimensions,
+          boxDim: realDimensions ? calcBoxDimension(realDimensions, isSet) : "",
+        });
+      }
+    });
+  });
+
+  const hardware = new Map<string, number>();
+  const addHardware = (name: string, qty: number) => hardware.set(name, (hardware.get(name) || 0) + qty);
+  project.forEach((line) => {
+    line.m.pkRows.filter((row) => row[0] === "hard" || row[0] === "cons")
+      .forEach((row) => addHardware(row[1], (typeof row[3] === "number" ? row[3] : 1) * line.qty));
+    (line.m.shutters || []).forEach((shutter) => {
+      if (shutter.hinge) addHardware(shutter.hinge, (shutter.hq || 1) * line.qty);
+      const corner = shutterCornerName(line.m.fk, shutter.kind);
+      if (corner) addHardware(corner, line.qty);
+    });
+  });
+  if (hardware.size) {
+    packNum += 1;
+    Array.from(hardware.entries()).forEach(([name, qty], index) => {
+      items.push({
+        key: `hardware:${index}:${name}`,
+        kind: "hardware",
+        group: "Hardware Pack & Other Items",
+        name,
+        qty: name.toLowerCase().includes("glue silicone") ? Math.ceil(qty / 270) : Math.ceil(qty),
+        uom: "PCS",
+        pack: `PACK - ${packNum}`,
+      });
+    });
+  }
+  return items;
+}
+
 function buildBuilderPackingHtml(
   project: ProjectLine[],
   soNumber: string,
@@ -7874,6 +7998,14 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const [zohoLoading, setZohoLoading] = useState<boolean>(false);
   const [zohoMessage, setZohoMessage] = useState<string>("");
   const [soSearchError, setSoSearchError] = useState<string>("");
+  const [planningModalOpen, setPlanningModalOpen] = useState(false);
+  const [planningFile, setPlanningFile] = useState<File | null>(null);
+  const [planningSubmitting, setPlanningSubmitting] = useState(false);
+  const [planningError, setPlanningError] = useState("");
+  const [planningStatus, setPlanningStatus] = useState("");
+  const [planningRecordId, setPlanningRecordId] = useState("");
+  const [planningCustomerName, setPlanningCustomerName] = useState("");
+  const [planningMppNo, setPlanningMppNo] = useState("");
 
   useEffect(() => {
     if (soQuery.length < 2) {
@@ -7922,6 +8054,16 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         setIsSoDetailLoading(false);
       });
   }, [selectedSo]);
+
+  useEffect(() => {
+    setPlanningRecordId("");
+    setPlanningStatus("");
+    setPlanningError("");
+    setPlanningFile(null);
+    setPlanningModalOpen(false);
+    setPlanningCustomerName("");
+    setPlanningMppNo("");
+  }, [selectedSo?.salesorder_id]);
 
   // Sales-Order mode (reverse flow): instead of CREATING cabinet codes, decode the cabinet
   // codes that already live on the selected Zoho Sales Order back into models and drive the
@@ -10939,6 +11081,67 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     );
   };
 
+  const openPlanningDone = () => {
+    setPlanningError("");
+    setPlanningFile(null);
+    setPlanningCustomerName("");
+    setPlanningMppNo("");
+    setPlanningModalOpen(true);
+  };
+
+  const submitPlanningDone = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!planningFile || planningSubmitting) return;
+    const customerName = planningCustomerName.trim();
+    const mppNo = planningMppNo.trim();
+    if (!customerName || !mppNo) {
+      setPlanningError("Customer Name and MPP No are mandatory.");
+      return;
+    }
+    if (!/\.(xlsx|xls)$/i.test(planningFile.name)) {
+      setPlanningError("Choose an Excel file in .xlsx or .xls format.");
+      return;
+    }
+
+    const payload = {
+      id: mppNo,
+      createdAt: new Date().toISOString(),
+      customerName,
+      lines: project.map((line) => ({
+        code: line.m.code,
+        qty: line.qty,
+        elevation: line.elevation,
+        carcassMat: line.m.carcassMat,
+        shutterMat: line.m.shutterMat,
+      })),
+      items: buildPlanningItems(project),
+    };
+
+    const form = new FormData();
+    form.append("payload", JSON.stringify(payload));
+    form.append("file", planningFile, planningFile.name);
+    if (planningRecordId) form.append("zohoId", planningRecordId);
+
+    setPlanningSubmitting(true);
+    setPlanningError("");
+    setPlanningStatus("");
+    try {
+      const response = await fetch("/api/zoho/planning", { method: "POST", body: form });
+      const result = await response.json().catch(() => ({}));
+      if (result.recordId) setPlanningRecordId(String(result.recordId));
+      if (!response.ok || !result.ok) {
+        throw new Error(result.error || "Planning could not be completed.");
+      }
+      setPlanningStatus(`Planning ${mppNo} completed. The Excel sheet was attached in Zoho.`);
+      setPlanningModalOpen(false);
+      setPlanningFile(null);
+    } catch (error) {
+      setPlanningError(error instanceof Error ? error.message : "Planning could not be completed.");
+    } finally {
+      setPlanningSubmitting(false);
+    }
+  };
+
   // ---- Accessory Helpers ----
   const addAccessoryRow = () => {
     const nextId = accessoryCounter + 1;
@@ -13392,9 +13595,24 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                     <button className="addbtn" onClick={handleExcelDownload} style={{ fontSize: 11 }}>Excel BOM</button>
                     <button className="addbtn" onClick={handlePackingDownload} style={{ fontSize: 11 }}>Packing List (.xlsx)</button>
                     <button className="addbtn" onClick={handleLabelsDownload} style={{ fontSize: 11 }}>Labels (PDF)</button>
+                    {(!soMode || planningMode) && (
+                      <button
+                        className="addbtn"
+                        onClick={openPlanningDone}
+                        style={{ fontSize: 11, background: "#0f766e", color: "#fff", borderColor: "#0f766e" }}
+                        title="Create the Planning record and attach the completed MRP sheet"
+                      >
+                        ✅ Planning Done
+                      </button>
+                    )}
                     <button className="clr" onClick={downloadCsvFile}>CSV</button>
                     <button className="clr" onClick={copyCsvData}>{copiedCsv ? "copied" : "copy csv"}</button>
                   </div>
+                  {planningStatus && (
+                    <div style={{ marginTop: 12, padding: "9px 11px", borderRadius: 4, background: "#ecfdf5", border: "1px solid #6ee7b7", color: "#065f46", fontSize: 11, fontWeight: 700 }}>
+                      ✓ {planningStatus}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -13410,6 +13628,87 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         </div>
       </div>
       <footer className="builder-footer">Base zone · v4 — single-unit BoM + multi-unit project consolidation. Project list is session-only.</footer>
+
+      {planningModalOpen && (
+        <div className="finish-modal-backdrop">
+          <form className="finish-modal-content" onSubmit={submitPlanningDone} style={{ maxWidth: 520 }}>
+            <h3 className="finish-modal-title">Complete Planning</h3>
+            <p style={{ margin: "0 0 16px", color: "#625b50", fontSize: 12, lineHeight: 1.55 }}>
+              Upload the final, full MRP/form Excel sheet sent to Purchase. This creates or updates the Planning record using the MPP No and attaches the file to it in Zoho.
+            </p>
+            <label htmlFor="planning-customer-name" style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 800 }}>
+              Customer Name <span style={{ color: "#b42318" }}>*</span>
+            </label>
+            <input
+              id="planning-customer-name"
+              type="text"
+              value={planningCustomerName}
+              onChange={(event) => { setPlanningCustomerName(event.target.value); setPlanningError(""); }}
+              required
+              disabled={planningSubmitting}
+              placeholder="Enter customer name"
+              style={{ width: "100%", marginBottom: 13, padding: 10, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 12 }}
+            />
+            <label htmlFor="planning-mpp-no" style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 800 }}>
+              MPP No <span style={{ color: "#b42318" }}>*</span>
+            </label>
+            <input
+              id="planning-mpp-no"
+              type="text"
+              value={planningMppNo}
+              onChange={(event) => { setPlanningMppNo(event.target.value); setPlanningError(""); }}
+              required
+              disabled={planningSubmitting}
+              placeholder="Enter MPP number"
+              style={{ width: "100%", marginBottom: 13, padding: 10, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 12 }}
+            />
+            <label htmlFor="planning-mrp-file" style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 800 }}>
+              Final MRP / form sheet <span style={{ color: "#b42318" }}>*</span>
+            </label>
+            <input
+              id="planning-mrp-file"
+              type="file"
+              accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              required
+              disabled={planningSubmitting}
+              onChange={(event) => {
+                const file = event.target.files?.[0] || null;
+                setPlanningFile(file);
+                setPlanningError(file && !/\.(xlsx|xls)$/i.test(file.name) ? "Choose an Excel file in .xlsx or .xls format." : "");
+              }}
+              style={{ width: "100%", padding: 10, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 12 }}
+            />
+            {planningFile && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#625b50" }}>
+                Selected: <b>{planningFile.name}</b> · {(planningFile.size / 1024 / 1024).toFixed(2)} MB
+              </div>
+            )}
+            {planningRecordId && planningError && (
+              <div style={{ marginTop: 10, fontSize: 11, color: "#92400e" }}>
+                The Planning record is already saved. Retry will update that same record and retry its attachment; it will not create a duplicate.
+              </div>
+            )}
+            {planningError && <div className="finish-modal-error" style={{ marginTop: 12 }}>{planningError}</div>}
+            <div className="finish-modal-btn-row">
+              <button
+                type="button"
+                className="finish-modal-btn cancel"
+                onClick={() => { setPlanningModalOpen(false); setPlanningError(""); setPlanningFile(null); }}
+                disabled={planningSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="finish-modal-btn save"
+                disabled={planningSubmitting || !planningFile || !planningCustomerName.trim() || !planningMppNo.trim() || Boolean(planningError)}
+              >
+                {planningSubmitting ? "Saving to Zoho…" : "Upload & Complete"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {bomViewerOpen && (
         <BomWorksheetModal

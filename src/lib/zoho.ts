@@ -187,6 +187,50 @@ export async function zohoInventoryPost<T>(
   return zohoInventoryRequest<T>("POST", path, params, payload);
 }
 
+/** Uploads multipart data without setting Content-Type so fetch can add its boundary. */
+export async function zohoInventoryMultipartPost<T>(
+  path: string,
+  payload: FormData,
+  params: Record<string, string | number | undefined> = {},
+): Promise<T> {
+  let accessToken = await getZohoAccessToken();
+  const url = buildUrl(path, params);
+
+  const doFetch = (token: string) =>
+    fetch(url.toString(), {
+      method: "POST",
+      headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      body: payload,
+      cache: "no-store",
+    });
+
+  const readBody = async (response: Response) => {
+    const text = await response.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return { message: text };
+    }
+  };
+
+  let response = await doFetch(accessToken);
+  let body = await readBody(response);
+
+  if ((response.status === 401 || body.code === 57 || body.code === 14) && accessToken) {
+    await clearTokenCache();
+    accessToken = await getZohoAccessToken();
+    response = await doFetch(accessToken);
+    body = await readBody(response);
+  }
+
+  if (!response.ok || (typeof body.code === "number" && body.code > 0)) {
+    throw new Error(JSON.stringify(body));
+  }
+
+  return body as T;
+}
+
 async function zohoInventoryRequest<T>(
   method: "GET" | "PUT" | "POST",
   path: string,
