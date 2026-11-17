@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback, Fragment, type CSSProperties, type FormEvent } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, Fragment, type CSSProperties } from "react";
 import * as XLSX from "xlsx-js-style";
 import { jsPDF } from "jspdf";
 import JsBarcode from "jsbarcode";
@@ -10,8 +10,18 @@ import stoneFinishesData from "@/data/stone_finishes.json";
 import profileFinishesData from "@/data/profile_finishes.json";
 import planningFinishesData from "@/data/planning_finishes.json";
 import hardwareRoutingData from "@/data/hardware_routing.json";
+import accessoryCatalogData from "@/data/accessory_catalog.json";
 import { getPartBaseName, getPanelBaseName, normalizePartOrPanelName } from "@/lib/naming";
 import { mergeLocalCatalogItems } from "@/lib/itemCatalogClient";
+import {
+  optimizeStoneProject,
+  stoneOptiGroupKey,
+  stoneOptiGroups,
+  stoneOptiHtml,
+  type StoneOptiPiece,
+  type StoneOptiResult,
+  type StoneOptiSettings,
+} from "@/lib/stone-opti";
 
 // ---- Types & Interfaces ----
 interface Panel {
@@ -367,13 +377,16 @@ type PlanningPdfResult = {
 };
 
 // ---- Accessory Types ----
-type AccessoryKey = "skirting" | "duplay" | "lprofile" | "jhandle" | "chandle" | "grandlight" | "langle";
+type AccessoryKey = string;
 
 type AccessoryItem = {
   key: AccessoryKey;
   label: string;
   itemId: string;
   condition: (zone: string) => boolean;
+  catalogue?: boolean;
+  subgroup?: string;
+  unit?: string;
 };
 
 type AccessoryEntry = {
@@ -406,7 +419,18 @@ const ACCESSORY_ITEMS: AccessoryItem[] = [
   { key: "chandle", label: "C type handle", itemId: "3418412000001249028", condition: () => true },
   { key: "langle", label: "L Angle Profile", itemId: "", condition: () => true }, // like J/C handle, no inserts
   // Grand Profile Light moved to the Countertop BOM — no longer an accessory.
+  ...(accessoryCatalogData as Array<{ name: string; subgroup: string; unit: string }>).map((item, index) => ({
+    key: `catalogue:${index}`,
+    label: item.name,
+    itemId: "",
+    condition: () => true,
+    catalogue: true,
+    subgroup: item.subgroup,
+    unit: item.unit || "Pcs",
+  })),
 ];
+
+const CATALOGUE_ACCESSORY_NAMES = new Set(ACCESSORY_ITEMS.filter(item => item.catalogue).map(item => item.label));
 
 const PROFILE_ACC_KEYS: AccessoryKey[] = ["skirting", "duplay", "lprofile"];
 
@@ -2880,6 +2904,70 @@ type BomQuantityOverride = {
 
 type BomQuantityOverrides = Record<string, BomQuantityOverride>;
 
+type WorkbookCellValue = string | number | boolean | null;
+type EditableWorkbookSheet = {
+  name: "BOM" | "OP" | "Hardware items";
+  rows: WorkbookCellValue[][];
+  colWidths: Array<{ wch?: number; wpx?: number }>;
+  cellStyles: Record<string, unknown>;
+};
+
+const PLANNING_WORKBOOK_SHEETS: EditableWorkbookSheet["name"][] = ["BOM", "OP", "Hardware items"];
+const MPP_CELL_TOKEN = "__MAGPPIE_MPP_NO__";
+
+function materializePlanningCell(value: WorkbookCellValue, mppNo: string): WorkbookCellValue {
+  return typeof value === "string" ? value.replaceAll(MPP_CELL_TOKEN, mppNo) : value;
+}
+
+function editablePlanningSheetsFromWorkbook(workbook: XLSX.WorkBook): EditableWorkbookSheet[] {
+  const fallbackRows: Record<EditableWorkbookSheet["name"], WorkbookCellValue[][]> = {
+    BOM: [["S. No.", "MPP No", "Elevation", "Main Group", "SKU", "Type", "Height", "Width", "Depth", "Actual Qty", "Unit", "Thickness", "Finish", "Grain", "Remark"]],
+    OP: [[...OP_CODE_HEADER], [...OP_LABEL_HEADER]],
+    "Hardware items": [["RM Item Name", "Order From", "Material Type", "Quantity", "Order Qty", "UOM"]],
+  };
+  return PLANNING_WORKBOOK_SHEETS.map((name) => {
+    const worksheet = workbook.Sheets[name];
+    const rows = worksheet
+      ? (XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: true, defval: "" }) as WorkbookCellValue[][])
+      : fallbackRows[name];
+    if (name === "BOM" && rows[0]?.[1] === "SO") rows[0][1] = "MPP No";
+    const cellStyles: Record<string, unknown> = {};
+    if (worksheet?.["!ref"]) {
+      const range = XLSX.utils.decode_range(worksheet["!ref"]);
+      for (let row = range.s.r; row <= range.e.r; row += 1) {
+        for (let col = range.s.c; col <= range.e.c; col += 1) {
+          const address = XLSX.utils.encode_cell({ r: row, c: col });
+          const style = worksheet[address]?.s;
+          if (style) cellStyles[address] = style;
+        }
+      }
+    }
+    return {
+      name,
+      rows: rows.length ? rows : fallbackRows[name],
+      colWidths: (worksheet?.["!cols"] || []).map((column) => ({ wch: column.wch, wpx: column.wpx })),
+      cellStyles,
+    };
+  });
+}
+
+function planningWorkbookFromEditableSheets(sheets: EditableWorkbookSheet[], mppNo: string): XLSX.WorkBook {
+  const workbook = XLSX.utils.book_new();
+  sheets.forEach((sheet) => {
+    const materialized = sheet.rows.map((row) => row.map((value) => materializePlanningCell(value, mppNo)));
+    const worksheet = XLSX.utils.aoa_to_sheet(materialized);
+    worksheet["!cols"] = sheet.colWidths.length ? sheet.colWidths : materialized[0]?.map(() => ({ wch: 16 }));
+    Object.entries(sheet.cellStyles).forEach(([address, style]) => {
+      if (worksheet[address]) worksheet[address].s = style as any;
+    });
+    if ((sheet.name === "BOM" || sheet.name === "Hardware items") && materialized.length > 1 && materialized[0]?.length) {
+      worksheet["!autofilter"] = { ref: XLSX.utils.encode_range({ r: 0, c: 0 }, { r: materialized.length - 1, c: materialized[0].length - 1 }) };
+    }
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheet.name);
+  });
+  return workbook;
+}
+
 const BOM_WORKSHEET_COLUMNS: Array<{ key: keyof FullBomRow; label: string; minWidth?: number }> = [
   { key: "SO", label: "SO", minWidth: 90 },
   { key: "Elevation", label: "Elevation", minWidth: 80 },
@@ -4959,7 +5047,7 @@ function buildOosData(fullBom: FullBomRow[]): OosRow[] {
 type AccCutPiece = { so: string; name: string; length: number; qty: number; finish: string; code: string; accessory: string };
 function accessoryCutPieces(accessories: Array<Record<string, unknown>> | undefined, soFallback: string): AccCutPiece[] {
   return (accessories || [])
-    .filter((a) => String(a.Selected || "") === "Yes" && String(a.Accessory || "") !== "Other Accessory")
+    .filter((a) => String(a.Selected || "") === "Yes" && String(a.Accessory || "") !== "Other Accessory" && !CATALOGUE_ACCESSORY_NAMES.has(String(a["Item Name"] || "")))
     .map((a) => {
       const name = String(a["Item Name"] || "").trim();
       // The cutting list uses the piece Size (mm) as the length and the whole piece count as the qty.
@@ -5031,6 +5119,31 @@ function buildOptiData(fullBom: FullBomRow[], accessories?: Array<Record<string,
     });
   });
   return rows;
+}
+
+function buildStoneOptiPieces(fullBom: FullBomRow[], accessories?: Array<Record<string, unknown>>, soFallback = ""): StoneOptiPiece[] {
+  return buildOptiData(fullBom, accessories, soFallback).flatMap((row, index) => {
+    const length = parseFloat(String(row.Length || ""));
+    const width = parseFloat(String(row.Width || ""));
+    const qty = Math.round(parseFloat(String(row.Qty || "")) || 0);
+    if (!(length > 0) || qty < 1) return [];
+    const profileCode = String(row["Profile Code"] || "").trim();
+    const rawGroup = String(row.Group || "").toLowerCase();
+    const kind: StoneOptiPiece["kind"] = rawGroup.includes("profile") || !(width > 0) ? "length" : "sheet";
+    const item = String(row["Item Name"] || "Cut piece").trim();
+    return [{
+      id: `${index}-${item}-${length}-${width || 0}`,
+      item,
+      group: kind === "length" ? (profileCode ? `Profile ${profileCode}` : item) : "Stone",
+      length,
+      width: kind === "length" ? 1 : width,
+      qty,
+      thickness: parseFloat(String(row.Thickness || "")) || 0,
+      finish: String(row.Finish || "").trim(),
+      kind,
+      filler: /filler/i.test(String(row.Type || "")) || /filler/i.test(item),
+    }];
+  });
 }
 
 // "OP" sheet — the factory Optimizer import format. Cut pieces (panels + profiles) grouped by RAW
@@ -5660,7 +5773,8 @@ function exportBuilderExcel(
     if (raw <= 0) return;
     const isLen = /\bPROF\b|LED LIGHT|DIFFUSER|\bTAPE\b|EXTENSION WIRE/i.test(nm);
     const qty = raw;
-    const uom = isLen ? "Mtr" : "Pcs";
+    const catalogueAccessory = ACCESSORY_ITEMS.find(item => item.catalogue && item.label === nm);
+    const uom = catalogueAccessory?.unit || (isLen ? "Mtr" : "Pcs");
     const { orderFrom, materialType } = mrpRouting("Accessory", "Hardware", String(a.Accessory || ""), nm);
     const mapKey = `${nm}||${orderFrom}||${materialType}`;
     if (hwItemsMap.has(mapKey)) {
@@ -6516,38 +6630,91 @@ function EditableNumberInput({
 }
 
 interface BomWorksheetModalProps {
-  rows: FullBomRow[];
-  overrides: BomQuantityOverrides;
-  salesOrder: string;
-  onQuantityChange: (rowKey: string, field: keyof BomQuantityOverride, value: number) => void;
-  onReset: () => void;
-  onDownload: () => void;
+  sheets: EditableWorkbookSheet[];
+  customerName: string;
+  mppNo: string;
+  submitting: boolean;
+  error: string;
+  recordId: string;
+  onSheetsChange: (sheets: EditableWorkbookSheet[]) => void;
+  onCustomerNameChange: (value: string) => void;
+  onMppNoChange: (value: string) => void;
+  onDownload: (sheets: EditableWorkbookSheet[], mppNo: string) => void;
+  onPlanningDone: (sheets: EditableWorkbookSheet[], customerName: string, mppNo: string) => void;
   onClose: () => void;
 }
 
 function BomWorksheetModal({
-  rows,
-  overrides,
-  salesOrder,
-  onQuantityChange,
-  onReset,
+  sheets,
+  customerName,
+  mppNo,
+  submitting,
+  error,
+  recordId,
+  onSheetsChange,
+  onCustomerNameChange,
+  onMppNoChange,
   onDownload,
+  onPlanningDone,
   onClose,
 }: BomWorksheetModalProps) {
+  const [activeSheetName, setActiveSheetName] = useState<EditableWorkbookSheet["name"]>("BOM");
   const [search, setSearch] = useState("");
-  const keys = useMemo(() => fullBomRowKeys(rows), [rows]);
-  const numberedRows = useMemo(() => {
-    let serial = 0;
-    return rows.map((row, index) => {
-      if (row.Level === 0) serial += 1;
-      return { row, rowKey: keys[index], serial, index };
-    });
-  }, [rows, keys]);
+  const [columnFilters, setColumnFilters] = useState<Record<string, Record<number, string>>>({});
+  const [showFilters, setShowFilters] = useState(true);
+  const activeSheet = sheets.find((sheet) => sheet.name === activeSheetName) || sheets[0];
+  const columnCount = Math.max(1, ...(activeSheet?.rows || []).map((row) => row.length));
   const normalizedSearch = search.trim().toLowerCase();
-  const visibleRows = normalizedSearch
-    ? numberedRows.filter(({ row }) => BOM_WORKSHEET_COLUMNS.some(({ key }) => String(row[key] ?? "").toLowerCase().includes(normalizedSearch)))
-    : numberedRows;
-  const hasInvalidQuantity = invalidBomQuantityOverrides(overrides);
+  const activeFilters = columnFilters[activeSheetName] || {};
+  const visibleRows = (activeSheet?.rows || []).map((row, index) => ({ row, index })).filter(({ row }) => {
+    if (normalizedSearch && !row.some((value) => String(materializePlanningCell(value ?? "", mppNo)).toLowerCase().includes(normalizedSearch))) return false;
+    return Object.entries(activeFilters).every(([column, filter]) => {
+      const normalized = filter.trim().toLowerCase();
+      return !normalized || String(materializePlanningCell(row[Number(column)] ?? "", mppNo)).toLowerCase().includes(normalized);
+    });
+  });
+  const numericColumns = useMemo(() => {
+    const numeric = new Set<number>();
+    (activeSheet?.rows || []).forEach((row) => row.forEach((value, column) => { if (typeof value === "number") numeric.add(column); }));
+    return numeric;
+  }, [activeSheet]);
+
+  const columnLabel = (index: number) => {
+    let value = index + 1;
+    let label = "";
+    while (value > 0) {
+      const remainder = (value - 1) % 26;
+      label = String.fromCharCode(65 + remainder) + label;
+      value = Math.floor((value - 1) / 26);
+    }
+    return label;
+  };
+
+  const updateSheet = (updater: (sheet: EditableWorkbookSheet) => EditableWorkbookSheet) => {
+    onSheetsChange(sheets.map((sheet) => sheet.name === activeSheetName ? updater(sheet) : sheet));
+  };
+
+  const updateCell = (rowIndex: number, columnIndex: number, raw: string) => {
+    updateSheet((sheet) => {
+      const rows = sheet.rows.map((row) => [...row]);
+      while (rows[rowIndex].length < columnCount) rows[rowIndex].push("");
+      let value: WorkbookCellValue = raw;
+      if (numericColumns.has(columnIndex) && raw.trim() !== "") {
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed)) value = parsed;
+      }
+      const original = rows[rowIndex][columnIndex];
+      if (typeof original === "string" && original.includes(MPP_CELL_TOKEN) && mppNo && typeof value === "string") {
+        value = value.replaceAll(mppNo, MPP_CELL_TOKEN);
+      }
+      rows[rowIndex][columnIndex] = value;
+      return { ...sheet, rows };
+    });
+  };
+
+  const addRow = () => updateSheet((sheet) => ({ ...sheet, rows: [...sheet.rows, Array(columnCount).fill("")] }));
+  const addColumn = () => updateSheet((sheet) => ({ ...sheet, rows: sheet.rows.map((row) => [...row, ""]), colWidths: [...sheet.colWidths, { wch: 16 }] }));
+  const deleteRow = (rowIndex: number) => updateSheet((sheet) => ({ ...sheet, rows: sheet.rows.filter((_, index) => index !== rowIndex) }));
 
   const printWorksheet = () => {
     const popup = window.open("", "_blank", "width=1400,height=900");
@@ -6555,47 +6722,12 @@ function BomWorksheetModal({
       alert("Please allow pop-ups so the BOM print window can open.");
       return;
     }
-    const header = ["S. No.", ...BOM_WORKSHEET_COLUMNS.map((column) => column.label)]
-      .map((label) => `<th>${escapeHtml(label)}</th>`).join("");
-    const body = visibleRows.map(({ row, serial }) => {
-      const fill = ROW_TYPE_FILLS[row._type]?.fgColor.rgb || "FFFFFF";
-      const cells = [serial, ...BOM_WORKSHEET_COLUMNS.map(({ key }) => row[key])]
-        .map((value) => `<td>${escapeHtml(value)}</td>`).join("");
-      return `<tr style="background:#${fill}">${cells}</tr>`;
-    }).join("");
-    popup.document.write(`<!doctype html><html><head><title>BOM ${escapeHtml(salesOrder)}</title><style>
-      @page{size:A3 landscape;margin:8mm}body{font-family:Arial,sans-serif;color:#222;margin:0}h1{font-size:16px;margin:0 0 3px}p{font-size:10px;margin:0 0 8px;color:#555}table{border-collapse:collapse;width:100%;font-size:7px}thead{display:table-header-group}th{background:#24211d;color:#fff;position:sticky;top:0}th,td{border:1px solid #b9b3aa;padding:3px 4px;text-align:left;vertical-align:top;white-space:pre-wrap}tr{break-inside:avoid}.qty{text-align:right}
-    </style></head><body><h1>Full BOM</h1><p>Sales order: ${escapeHtml(salesOrder)} · ${visibleRows.length} row(s)</p><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();};<\/script></body></html>`);
+    const header = Array.from({ length: columnCount }, (_, index) => `<th>${columnLabel(index)}</th>`).join("");
+    const body = visibleRows.map(({ row }) => `<tr>${Array.from({ length: columnCount }, (_, column) => `<td>${escapeHtml(materializePlanningCell(row[column] ?? "", mppNo))}</td>`).join("")}</tr>`).join("");
+    popup.document.write(`<!doctype html><html><head><title>${escapeHtml(activeSheetName)} ${escapeHtml(mppNo)}</title><style>
+      @page{size:A3 landscape;margin:8mm}body{font-family:Arial,sans-serif;color:#222;margin:0}h1{font-size:16px;margin:0 0 3px}p{font-size:10px;margin:0 0 8px;color:#555}table{border-collapse:collapse;width:100%;font-size:7px}thead{display:table-header-group}th{background:#24211d;color:#fff}th,td{border:1px solid #b9b3aa;padding:3px 4px;text-align:left;vertical-align:top;white-space:pre-wrap}tr{break-inside:avoid}
+    </style></head><body><h1>${escapeHtml(activeSheetName)}</h1><p>MPP No: ${escapeHtml(mppNo || "Not entered")} · Customer: ${escapeHtml(customerName || "Not entered")} · ${visibleRows.length} row(s)</p><table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table><script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();};<\/script></body></html>`);
     popup.document.close();
-  };
-
-  const quantityCell = (
-    row: FullBomRow,
-    rowKey: string,
-    field: keyof BomQuantityOverride,
-    value: number,
-    label: string,
-  ) => {
-    const edited = overrides[rowKey]?.[field] !== undefined;
-    return (
-      <EditableNumberInput
-        value={value}
-        min={0}
-        step="any"
-        fieldLabel={`${label} for ${row.Item.trim() || row.SKU}`}
-        onValueChange={(next) => onQuantityChange(rowKey, field, next)}
-        style={{
-          width: 78,
-          padding: "4px 5px",
-          border: `1px solid ${edited ? "#d49a24" : "#cfc8bc"}`,
-          borderRadius: 2,
-          background: edited ? "#fff4d6" : "#fff",
-          fontFamily: "'IBM Plex Mono', monospace",
-          fontSize: 10,
-          textAlign: "right",
-        }}
-      />
-    );
   };
 
   return (
@@ -6603,46 +6735,42 @@ function BomWorksheetModal({
       <div style={{ width: "100%", maxWidth: 1900, minHeight: 0, background: "#f8f5ef", border: "1px solid #8e877b", borderRadius: 8, boxShadow: "0 18px 60px rgba(0,0,0,.28)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <div style={{ padding: "12px 14px", background: "#24211d", color: "#fff", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ marginRight: "auto" }}>
-            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 19 }}>Full BOM worksheet</div>
-            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#d7d0c5" }}>{salesOrder} · {rows.length} rows · edited cells are amber</div>
+            <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 19 }}>BOM workbook</div>
+            <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#d7d0c5" }}>BOM · OP · Hardware Items · edits are included in download and Planning Done</div>
           </div>
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search worksheet…" aria-label="Search BOM worksheet" style={{ width: 230, padding: "7px 9px", borderRadius: 4, border: "1px solid #756f65", background: "#fff", color: "#24211d", fontSize: 12 }} />
-          <button className="clr" onClick={onReset} disabled={Object.keys(overrides).length === 0}>Reset edits</button>
+          <button className="clr" onClick={() => setShowFilters((current) => !current)}>{showFilters ? "Hide filters" : "Show filters"}</button>
           <button className="clr" onClick={printWorksheet}>Print</button>
-          <button className="addbtn" onClick={onDownload} disabled={hasInvalidQuantity}>Download Excel</button>
+          <button className="addbtn" onClick={() => onDownload(sheets, mppNo)} disabled={!mppNo.trim()}>Download Excel</button>
           <button className="clr" onClick={onClose} aria-label="Close BOM worksheet">Close</button>
         </div>
-        {hasInvalidQuantity && <div style={{ padding: "8px 14px", background: "#fde7e2", color: "#a32920", fontSize: 11, fontWeight: 700 }}>A quantity is below zero. Correct the highlighted value before downloading.</div>}
-        <div style={{ padding: "7px 12px", borderBottom: "1px solid #d8d1c5", background: "#eee9df", fontSize: 10.5, color: "#625b50" }}>
-          Edit SO Qty, Actual Qty, or Pcs directly. Changes are session-only and are used by Print and the next Excel BOM download.
+        <div style={{ padding: "10px 14px", display: "grid", gridTemplateColumns: "minmax(220px,1fr) minmax(180px,.65fr) auto", gap: 10, alignItems: "end", borderBottom: "1px solid #d8d1c5", background: "#eee9df" }}>
+          <label style={{ fontSize: 10, fontWeight: 800 }}>Customer Name *<input value={customerName} onChange={(event) => onCustomerNameChange(event.target.value)} disabled={submitting} placeholder="Enter customer name" style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 9px", border: "1px solid #aaa296", borderRadius: 4, background: "#fff" }} /></label>
+          <label style={{ fontSize: 10, fontWeight: 800 }}>MPP No *<input value={mppNo} onChange={(event) => onMppNoChange(event.target.value)} disabled={submitting} placeholder="Enter MPP number" style={{ display: "block", width: "100%", marginTop: 4, padding: "8px 9px", border: "1px solid #aaa296", borderRadius: 4, background: "#fff" }} /></label>
+          <button className="addbtn" onClick={() => onPlanningDone(sheets, customerName, mppNo)} disabled={submitting || !customerName.trim() || !mppNo.trim()} style={{ background: "#0f766e", color: "#fff", minWidth: 165 }}>{submitting ? "Saving to Zoho…" : "Planning Done"}</button>
+        </div>
+        {recordId && error && <div style={{ padding: "7px 14px", background: "#fff7ed", color: "#92400e", fontSize: 11 }}>The Planning record is already saved. Retry will update it and retry the workbook attachment.</div>}
+        {error && <div style={{ padding: "8px 14px", background: "#fde7e2", color: "#a32920", fontSize: 11, fontWeight: 700 }}>{error}</div>}
+        <div style={{ padding: "7px 12px", borderBottom: "1px solid #d8d1c5", background: "#f8f5ef", display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
+          {sheets.map((sheet) => <button key={sheet.name} className={sheet.name === activeSheetName ? "addbtn" : "clr"} onClick={() => { setActiveSheetName(sheet.name); setSearch(""); }} style={{ fontSize: 10 }}>{sheet.name === "Hardware items" ? "Hardware Items" : sheet.name}</button>)}
+          <span style={{ width: 1, height: 24, background: "#d8d1c5", margin: "0 3px" }} />
+          <button className="clr" onClick={addRow} style={{ fontSize: 10 }}>+ Add Row</button>
+          <button className="clr" onClick={addColumn} style={{ fontSize: 10 }}>+ Add Column</button>
+          <span style={{ marginLeft: "auto", color: "#70685d", fontSize: 10 }}>{visibleRows.length} of {activeSheet?.rows.length || 0} rows</span>
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "#fff" }}>
           <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "max-content", minWidth: "100%", fontFamily: "'IBM Plex Mono', monospace", fontSize: 10 }}>
             <thead>
               <tr>
-                <th style={{ position: "sticky", top: 0, left: 0, zIndex: 5, background: "#24211d", color: "#fff", minWidth: 58, padding: "7px 6px", borderRight: "1px solid #5c564d", borderBottom: "1px solid #5c564d" }}>S. No.</th>
-                {BOM_WORKSHEET_COLUMNS.map((column) => (
-                  <th key={column.key} style={{ position: "sticky", top: 0, zIndex: 4, background: "#24211d", color: "#fff", minWidth: column.minWidth, padding: "7px 6px", borderRight: "1px solid #5c564d", borderBottom: "1px solid #5c564d", textAlign: "left", whiteSpace: "nowrap" }}>{column.label}</th>
-                ))}
+                <th style={{ position: "sticky", top: 0, left: 0, zIndex: 6, background: "#24211d", color: "#fff", minWidth: 52, padding: "7px 6px", borderRight: "1px solid #5c564d", borderBottom: "1px solid #5c564d" }}>#</th>
+                {Array.from({ length: columnCount }, (_, column) => <th key={column} style={{ position: "sticky", top: 0, zIndex: 4, background: "#24211d", color: "#fff", minWidth: Math.max(90, Math.min(420, ((activeSheet?.colWidths[column]?.wch || 16) * 7))), padding: "7px 6px", borderRight: "1px solid #5c564d", borderBottom: "1px solid #5c564d", textAlign: "center" }}>{columnLabel(column)}</th>)}
+                <th style={{ position: "sticky", top: 0, zIndex: 4, background: "#24211d", color: "#fff", minWidth: 48 }} />
               </tr>
+              {showFilters && <tr><th style={{ position: "sticky", top: 29, left: 0, zIndex: 6, background: "#eee9df", borderBottom: "1px solid #c9c2b7" }}><button className="clr" onClick={() => setColumnFilters((current) => ({ ...current, [activeSheetName]: {} }))} style={{ fontSize: 8, padding: "3px 5px" }}>Clear</button></th>{Array.from({ length: columnCount }, (_, column) => <th key={column} style={{ position: "sticky", top: 29, zIndex: 4, background: "#eee9df", padding: 3, borderRight: "1px solid #d8d1c5", borderBottom: "1px solid #c9c2b7" }}><input value={activeFilters[column] || ""} onChange={(event) => setColumnFilters((current) => ({ ...current, [activeSheetName]: { ...(current[activeSheetName] || {}), [column]: event.target.value } }))} placeholder="Filter…" style={{ width: "100%", minWidth: 70, padding: "3px 4px", fontSize: 9, border: "1px solid #c5beb2", borderRadius: 2 }} /></th>)}<th style={{ position: "sticky", top: 29, zIndex: 4, background: "#eee9df", borderBottom: "1px solid #c9c2b7" }} /></tr>}
             </thead>
             <tbody>
-              {visibleRows.map(({ row, rowKey, serial, index }) => {
-                const fill = `#${ROW_TYPE_FILLS[row._type]?.fgColor.rgb || "FFFFFF"}`;
-                return (
-                  <tr key={rowKey} style={{ background: fill }}>
-                    <td style={{ position: "sticky", left: 0, zIndex: 2, background: fill, padding: "5px 6px", borderRight: "1px solid #c9c2b7", borderBottom: "1px solid #ddd6ca", textAlign: "center" }}>{serial}</td>
-                    {BOM_WORKSHEET_COLUMNS.map((column) => {
-                      let content: React.ReactNode = String(row[column.key] ?? "");
-                      if (column.key === "SO Qty") content = quantityCell(row, rowKey, "soQty", row["SO Qty"], "SO Qty");
-                      if (column.key === "Actual Qty") content = quantityCell(row, rowKey, "actualQty", row["Actual Qty"], "Actual Qty");
-                      if (column.key === "Pcs" && row.Pcs !== "-") content = quantityCell(row, rowKey, "pcs", Number(row.Pcs) || 0, "Pcs");
-                      return <td key={`${index}-${column.key}`} style={{ padding: "4px 6px", borderRight: "1px solid #ddd6ca", borderBottom: "1px solid #ddd6ca", whiteSpace: column.key === "Item" ? "pre" : "nowrap", verticalAlign: "top" }}>{content}</td>;
-                    })}
-                  </tr>
-                );
-              })}
-              {visibleRows.length === 0 && <tr><td colSpan={BOM_WORKSHEET_COLUMNS.length + 1} style={{ padding: 30, textAlign: "center", color: "#857d71" }}>No BOM rows match this search.</td></tr>}
+              {visibleRows.map(({ row, index }) => <tr key={`${activeSheetName}-${index}`}><td style={{ position: "sticky", left: 0, zIndex: 2, background: "#f3efe7", padding: "5px 6px", borderRight: "1px solid #c9c2b7", borderBottom: "1px solid #ddd6ca", textAlign: "center", color: "#766e63" }}>{index + 1}</td>{Array.from({ length: columnCount }, (_, column) => { const isMpp = row[column] === MPP_CELL_TOKEN; return <td key={column} style={{ padding: 0, borderRight: "1px solid #ddd6ca", borderBottom: "1px solid #ddd6ca", background: isMpp ? "#e0f2f1" : "#fff" }}><input value={String(materializePlanningCell(row[column] ?? "", mppNo))} onChange={(event) => updateCell(index, column, event.target.value)} readOnly={isMpp} title={isMpp ? "Controlled by the MPP No field above" : undefined} style={{ width: "100%", minWidth: 84, padding: "5px 6px", border: 0, outline: "none", background: "transparent", fontFamily: "inherit", fontSize: 10, textAlign: numericColumns.has(column) ? "right" : "left" }} /></td>; })}<td style={{ padding: 2, borderBottom: "1px solid #ddd6ca" }}><button className="clr" onClick={() => deleteRow(index)} title={`Delete row ${index + 1}`} style={{ padding: "3px 6px", fontSize: 9 }}>×</button></td></tr>)}
+              {visibleRows.length === 0 && <tr><td colSpan={columnCount + 2} style={{ padding: 30, textAlign: "center", color: "#857d71" }}>No rows match the current filters.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -7737,6 +7865,15 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const [copiedCsv, setCopiedCsv] = useState<boolean>(false);
   const [bomViewerOpen, setBomViewerOpen] = useState<boolean>(false);
   const [bomQuantityOverrides, setBomQuantityOverrides] = useState<BomQuantityOverrides>({});
+  const [planningWorkbookSheets, setPlanningWorkbookSheets] = useState<EditableWorkbookSheet[]>([]);
+  const [optiOpen, setOptiOpen] = useState(false);
+  const [optiPieces, setOptiPieces] = useState<StoneOptiPiece[]>([]);
+  const [optiSettings, setOptiSettings] = useState<StoneOptiSettings>({
+    priority: "quantity", grainLocked: false, overproduction: false, kerf: 3, trim: 0, groups: {},
+  });
+  const [optiResult, setOptiResult] = useState<StoneOptiResult | null>(null);
+  const [optiError, setOptiError] = useState("");
+  const [optiBusy, setOptiBusy] = useState(false);
 
   // Accessories state
   const [accessoryRows, setAccessoryRows] = useState<AccessorySubformRow[]>([]);
@@ -7998,8 +8135,6 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   const [zohoLoading, setZohoLoading] = useState<boolean>(false);
   const [zohoMessage, setZohoMessage] = useState<string>("");
   const [soSearchError, setSoSearchError] = useState<string>("");
-  const [planningModalOpen, setPlanningModalOpen] = useState(false);
-  const [planningFile, setPlanningFile] = useState<File | null>(null);
   const [planningSubmitting, setPlanningSubmitting] = useState(false);
   const [planningError, setPlanningError] = useState("");
   const [planningStatus, setPlanningStatus] = useState("");
@@ -8059,10 +8194,10 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     setPlanningRecordId("");
     setPlanningStatus("");
     setPlanningError("");
-    setPlanningFile(null);
-    setPlanningModalOpen(false);
     setPlanningCustomerName("");
     setPlanningMppNo("");
+    setPlanningWorkbookSheets([]);
+    setBomViewerOpen(false);
   }, [selectedSo?.salesorder_id]);
 
   // Sales-Order mode (reverse flow): instead of CREATING cabinet codes, decode the cabinet
@@ -11006,11 +11141,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
   // no per-cabinet J/C count anymore (feature retired with the accessory-section redesign).
   const computeJcByLine = (): number[] => [];
 
-  const bomWorksheetBaseRows = useMemo(() => {
-    if (!bomViewerOpen) return [];
-    return buildFullBomData(
+  const buildCurrentExportWorkbook = (identifier: string): XLSX.WorkBook => {
+    const workbook = exportBuilderExcel(
       project,
-      selectedSo?.salesorder_number || "Project",
+      buildAccessoryExportRows(),
+      identifier,
       stockMap,
       selectedRawIds,
       rawOptionsMap,
@@ -11023,33 +11158,30 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       getDefaultCabinetDepthForZone,
       getShutterProfileForZone,
       getProfileColorForZone,
-      computeJcByLine()
+      true,
+      computeJcByLine(),
+      bomQuantityOverrides
     );
-  }, [
-    bomViewerOpen,
-    project,
-    selectedSo?.salesorder_number,
-    stockMap,
-    selectedRawIds,
-    rawOptionsMap,
-    fillers,
-    visiblePanels,
-    backsplashes,
-    countertops,
-    shutterMat,
-    design,
-    shutterProfileColor,
-  ]);
-  const bomWorksheetRows = useMemo(
-    () => applyBomQuantityOverrides(bomWorksheetBaseRows, bomQuantityOverrides),
-    [bomWorksheetBaseRows, bomQuantityOverrides]
-  );
+    if (!workbook) throw new Error("The BOM workbook could not be generated.");
+    return workbook;
+  };
 
-  const updateBomWorksheetQuantity = (rowKey: string, field: keyof BomQuantityOverride, value: number) => {
-    setBomQuantityOverrides((current) => ({
-      ...current,
-      [rowKey]: { ...current[rowKey], [field]: value },
-    }));
+  const openBomWorkbook = () => {
+    if (invalidBomQuantityOverrides(bomQuantityOverrides)) {
+      alert("The BOM contains a quantity below zero. Correct it before opening the workbook.");
+      return;
+    }
+    try {
+      const sourceWorkbook = buildCurrentExportWorkbook(MPP_CELL_TOKEN);
+      setPlanningWorkbookSheets(editablePlanningSheetsFromWorkbook(sourceWorkbook));
+      setPlanningCustomerName("");
+      setPlanningMppNo("");
+      setPlanningError("");
+      setPlanningRecordId("");
+      setBomViewerOpen(true);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "The BOM workbook could not be opened.");
+    }
   };
 
   const handleExcelDownload = () => {
@@ -11081,27 +11213,32 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
     );
   };
 
-  const openPlanningDone = () => {
-    setPlanningError("");
-    setPlanningFile(null);
-    setPlanningCustomerName("");
-    setPlanningMppNo("");
-    setPlanningModalOpen(true);
+  const downloadEditedPlanningWorkbook = (sheets: EditableWorkbookSheet[], rawMppNo: string) => {
+    const mppNo = rawMppNo.trim();
+    if (!mppNo) {
+      setPlanningError("MPP No is mandatory before downloading the workbook.");
+      return;
+    }
+    const workbook = planningWorkbookFromEditableSheets(sheets, mppNo);
+    XLSX.writeFile(workbook, `MPP_${sanitizeFilename(mppNo)}_BOM_${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const submitPlanningDone = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!planningFile || planningSubmitting) return;
-    const customerName = planningCustomerName.trim();
-    const mppNo = planningMppNo.trim();
+  const submitPlanningDone = async (sheets: EditableWorkbookSheet[], rawCustomerName: string, rawMppNo: string) => {
+    if (planningSubmitting) return;
+    const customerName = rawCustomerName.trim();
+    const mppNo = rawMppNo.trim();
     if (!customerName || !mppNo) {
       setPlanningError("Customer Name and MPP No are mandatory.");
       return;
     }
-    if (!/\.(xlsx|xls)$/i.test(planningFile.name)) {
-      setPlanningError("Choose an Excel file in .xlsx or .xls format.");
-      return;
-    }
+
+    const workbook = planningWorkbookFromEditableSheets(sheets, mppNo);
+    const workbookData = XLSX.write(workbook, { type: "array", bookType: "xlsx" }) as ArrayBuffer;
+    const workbookFile = new File(
+      [workbookData],
+      `MPP_${sanitizeFilename(mppNo)}_BOM_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    );
 
     const payload = {
       id: mppNo,
@@ -11119,7 +11256,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
 
     const form = new FormData();
     form.append("payload", JSON.stringify(payload));
-    form.append("file", planningFile, planningFile.name);
+    form.append("file", workbookFile, workbookFile.name);
     if (planningRecordId) form.append("zohoId", planningRecordId);
 
     setPlanningSubmitting(true);
@@ -11133,8 +11270,7 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
         throw new Error(result.error || "Planning could not be completed.");
       }
       setPlanningStatus(`Planning ${mppNo} completed. The Excel sheet was attached in Zoho.`);
-      setPlanningModalOpen(false);
-      setPlanningFile(null);
+      setBomViewerOpen(false);
     } catch (error) {
       setPlanningError(error instanceof Error ? error.message : "Planning could not be completed.");
     } finally {
@@ -11168,6 +11304,21 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       // Size (mm) and this piece count directly.
       const count = Math.max(0, Math.round(row.qty || 0));
       const sizeMm = parseFloat(String(row.size)) || 0;
+      if (acc.catalogue) {
+        if (count > 0) out.push({
+          SO: soNum,
+          "Carcass Items": "",
+          Accessory: acc.subgroup || "Accessories",
+          Selected: "Yes",
+          "Item Name": acc.label,
+          Size: "",
+          Elevation: row.elevation,
+          Total: count,
+          "Actual Qty": count,
+          "Zoho Item ID": acc.itemId,
+        });
+        return;
+      }
       const bom = LIGHT_PROFILE_BOMS[acc.key];
       if (bom) {
         // A piece longer than 2700 mm takes a full 3-mtr stock bar on its own, so no waste is added.
@@ -11241,6 +11392,138 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       }
     });
     return out;
+  };
+
+  const buildCurrentFullBomForOpti = () => applyBomQuantityOverrides(buildFullBomData(
+    project,
+    selectedSo?.salesorder_number || "Project",
+    stockMap,
+    selectedRawIds,
+    rawOptionsMap,
+    fillers,
+    visiblePanels,
+    backsplashes,
+    countertops,
+    getDefaultShutterShadeForZone,
+    getDefaultShutterHeightForZone,
+    getDefaultCabinetDepthForZone,
+    getShutterProfileForZone,
+    getProfileColorForZone,
+    computeJcByLine(),
+  ), bomQuantityOverrides);
+
+  const itemField = (item: any, apiName: string): string => {
+    if (!item) return "";
+    if (item[apiName] !== undefined && item[apiName] !== null && item[apiName] !== "") return String(item[apiName]);
+    const field = (item.custom_fields || []).find((candidate: any) => candidate.api_name === apiName);
+    return field ? String(field.value || "") : "";
+  };
+
+  const selectedCatalogueItems = () => Object.entries(selectedRawIds).flatMap(([key, selectedId]) => {
+    const item = (rawOptionsMap[key] || []).find((candidate: any) => candidate.item_id === selectedId);
+    return item ? [{ key, item }] : [];
+  });
+
+  const defaultOptiStock = (pieces: StoneOptiPiece[]) => {
+    const selected = selectedCatalogueItems();
+    const groups: StoneOptiSettings["groups"] = {};
+    stoneOptiGroups(pieces).forEach((group) => {
+      const sample = group.pieces[0];
+      const exact = selected.find(({ item }) => {
+        const names = [item.name, item.item_name, item.sku].filter(Boolean).map((value) => String(value).toUpperCase());
+        return names.includes(sample.group.toUpperCase()) || names.includes(sample.item.toUpperCase());
+      });
+      const related = exact || selected.find(({ key }) => {
+        const upper = key.toUpperCase();
+        return upper.includes(sample.finish.toUpperCase()) && upper.includes(String(sample.thickness));
+      });
+      const item = related?.item;
+      const itemName = String(item?.name || item?.item_name || "");
+      const embedded = itemName.match(/(\d+(?:\.\d+)?)\s*[X×]\s*(\d+(?:\.\d+)?)/i);
+      const height = parseFloat(itemField(item, "cf_height")) || parseFloat(item?.height) || parseFloat(embedded?.[1] || "") || 0;
+      const width = parseFloat(itemField(item, "cf_width")) || parseFloat(item?.width) || parseFloat(embedded?.[2] || "") || 0;
+      groups[group.key] = group.kind === "length"
+        ? { stockLength: Math.max(height, width) || 3000, stockWidth: 1 }
+        : { stockLength: height || 2800, stockWidth: width || 1200 };
+    });
+    return groups;
+  };
+
+  const openOpti = () => {
+    if (invalidBomQuantityOverrides(bomQuantityOverrides)) {
+      window.dispatchEvent(new Event("builder-number-validation"));
+      alert("The BOM contains an invalid quantity. Correct it before running OPTI.");
+      return;
+    }
+    try {
+      const accessories = buildAccessoryExportRows() as unknown as Array<Record<string, unknown>>;
+      const pieces = buildStoneOptiPieces(buildCurrentFullBomForOpti(), accessories, selectedSo?.salesorder_number || "Project");
+      const groups = defaultOptiStock(pieces);
+      setOptiPieces(pieces);
+      setOptiSettings(current => ({ ...current, groups }));
+      setOptiResult(null);
+      setOptiError(pieces.length ? "" : "The current project has no cuttable stone or profile parts.");
+      setOptiOpen(true);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "OPTI could not read the current project.");
+    }
+  };
+
+  const runOpti = () => {
+    setOptiBusy(true);
+    setOptiError("");
+    try {
+      const result = optimizeStoneProject(optiPieces, optiSettings);
+      setOptiResult(result);
+      const unplaced = result.groups.flatMap(group => group.unplaced);
+      if (unplaced.length) setOptiError(`${unplaced.length} part type(s) do not fit the selected stock size. They are listed in the result and were not silently split.`);
+    } catch (error) {
+      setOptiResult(null);
+      setOptiError(error instanceof Error ? error.message : "OPTI could not generate a cutting plan.");
+    } finally {
+      setOptiBusy(false);
+    }
+  };
+
+  const printOpti = () => {
+    if (!optiResult) return;
+    const popup = window.open("", "_blank", "noopener,noreferrer");
+    if (!popup) { setOptiError("Allow pop-ups to open the printable cutting chart."); return; }
+    popup.document.write(stoneOptiHtml(optiResult, selectedSo?.salesorder_number || "Stone Project", optiSettings));
+    popup.document.close();
+  };
+
+  const downloadOptiExcel = () => {
+    if (!optiResult) return;
+    const wb = XLSX.utils.book_new();
+    const summary = optiResult.groups.map(group => ({
+      Material: group.label,
+      "Stock Type": group.kind === "sheet" ? "Sheet" : "Length",
+      "Stock Length mm": group.stockLength,
+      "Stock Width mm": group.kind === "sheet" ? group.stockWidth : "",
+      "Stock Units": group.layouts.length,
+      "Required Pieces": group.requiredPieces,
+      "Extra Stock Pieces": group.extraPieces,
+      "Waste Before Extra Stock %": +group.wastePct.toFixed(2),
+      "Remaining Waste %": +group.remainingWastePct.toFixed(2),
+      "Unplaced Part Types": group.unplaced.length,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), "Summary");
+    const cuts = optiResult.groups.flatMap(group => group.layouts.flatMap(layout => layout.placements.map((placement, index) => ({
+      Material: group.label,
+      "Stock Unit": layout.number,
+      "Part No": index + 1,
+      Item: placement.piece.item,
+      "Length mm": placement.piece.length,
+      "Width mm": group.kind === "sheet" ? placement.piece.width : "",
+      Rotated: placement.rotated ? "Yes" : "No",
+      Purpose: placement.extra ? "Extra stock" : "Required project",
+    }))));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cuts), "Cutting Plan");
+    const unplaced = optiResult.groups.flatMap(group => group.unplaced.map(row => ({ Material: group.label, Item: row.piece.item,
+      "Length mm": row.piece.length, "Width mm": row.piece.width, Qty: row.piece.qty, Reason: row.reason })));
+    if (unplaced.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(unplaced), "Review");
+    XLSX.writeFile(wb, `stone-opti-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // ---- Stock Check ----
@@ -13524,19 +13807,20 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                         return (
                           <div key={row.id} style={{ border: "1px solid var(--line)", borderRadius: "5px", padding: "12px", background: "#fff", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                             <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
-                              Type
-                              <select value={row.type} onChange={(e) => updateAccessoryRow(row.id, { type: e.target.value as AccessoryKey })} style={{ fontSize: 11, padding: "4px 6px" }}>
-                                {ACCESSORY_ITEMS.map((a) => (<option key={a.key} value={a.key}>{a.label}</option>))}
-                              </select>
+                              Accessory
+                              <div style={{ width: 360, maxWidth: "80vw" }}>
+                                <SearchableSelect value={row.type} onChange={(value) => updateAccessoryRow(row.id, { type: value as AccessoryKey })} options={ACCESSORY_ITEMS.map((item) => ({ value: item.key, label: item.catalogue ? `${item.subgroup} — ${item.label}` : item.label }))} placeholder="Search accessories…" />
+                              </div>
                             </label>
                             <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
                               Qty (nos)
                               <EditableNumberInput fieldLabel="Accessory Quantity" step={1} min={0} value={row.qty} onValueChange={(value) => updateAccessoryRow(row.id, { qty: Math.round(value) })} style={{ width: "70px", fontSize: 11, padding: "4px 6px" }} />
                             </label>
-                            <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
+                            {!acc?.catalogue && <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
                               Size
                               <input type="text" placeholder="Size" value={row.size} onChange={(e) => updateAccessoryRow(row.id, { size: e.target.value })} style={{ width: "70px", fontSize: 11, padding: "4px 6px" }} />
-                            </label>
+                            </label>}
+                            {acc?.catalogue && <div style={{ fontSize: 10, color: "var(--ink)", opacity: 0.7 }}>{acc.subgroup} · {acc.unit}</div>}
                             <label style={{ fontSize: 10, display: "inline-flex", flexDirection: "column", gap: "3px" }}>
                               Elevation
                               <input type="text" placeholder="AA" value={row.elevation} onChange={(e) => updateAccessoryRow(row.id, { elevation: e.target.value })} style={{ width: "70px", fontSize: 11, padding: "4px 6px" }} />
@@ -13591,20 +13875,11 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
                     </select>
                   </div>
                   <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                    <button className="addbtn" onClick={() => setBomViewerOpen(true)} style={{ fontSize: 11 }}>View / Edit BOM</button>
+                    {!soMode && !planningMode && <button className="addbtn" onClick={openOpti} style={{ fontSize: 11 }}>Run OPTI</button>}
+                    <button className="addbtn" onClick={openBomWorkbook} style={{ fontSize: 11 }}>View / Edit BOM</button>
                     <button className="addbtn" onClick={handleExcelDownload} style={{ fontSize: 11 }}>Excel BOM</button>
                     <button className="addbtn" onClick={handlePackingDownload} style={{ fontSize: 11 }}>Packing List (.xlsx)</button>
                     <button className="addbtn" onClick={handleLabelsDownload} style={{ fontSize: 11 }}>Labels (PDF)</button>
-                    {(!soMode || planningMode) && (
-                      <button
-                        className="addbtn"
-                        onClick={openPlanningDone}
-                        style={{ fontSize: 11, background: "#0f766e", color: "#fff", borderColor: "#0f766e" }}
-                        title="Create the Planning record and attach the completed MRP sheet"
-                      >
-                        ✅ Planning Done
-                      </button>
-                    )}
                     <button className="clr" onClick={downloadCsvFile}>CSV</button>
                     <button className="clr" onClick={copyCsvData}>{copiedCsv ? "copied" : "copy csv"}</button>
                   </div>
@@ -13629,97 +13904,94 @@ export function CarcassBomBuilder({ soMode = false, planningMode = false }: { so
       </div>
       <footer className="builder-footer">Base zone · v4 — single-unit BoM + multi-unit project consolidation. Project list is session-only.</footer>
 
-      {planningModalOpen && (
-        <div className="finish-modal-backdrop">
-          <form className="finish-modal-content" onSubmit={submitPlanningDone} style={{ maxWidth: 520 }}>
-            <h3 className="finish-modal-title">Complete Planning</h3>
-            <p style={{ margin: "0 0 16px", color: "#625b50", fontSize: 12, lineHeight: 1.55 }}>
-              Upload the final, full MRP/form Excel sheet sent to Purchase. This creates or updates the Planning record using the MPP No and attaches the file to it in Zoho.
-            </p>
-            <label htmlFor="planning-customer-name" style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 800 }}>
-              Customer Name <span style={{ color: "#b42318" }}>*</span>
-            </label>
-            <input
-              id="planning-customer-name"
-              type="text"
-              value={planningCustomerName}
-              onChange={(event) => { setPlanningCustomerName(event.target.value); setPlanningError(""); }}
-              required
-              disabled={planningSubmitting}
-              placeholder="Enter customer name"
-              style={{ width: "100%", marginBottom: 13, padding: 10, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 12 }}
-            />
-            <label htmlFor="planning-mpp-no" style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 800 }}>
-              MPP No <span style={{ color: "#b42318" }}>*</span>
-            </label>
-            <input
-              id="planning-mpp-no"
-              type="text"
-              value={planningMppNo}
-              onChange={(event) => { setPlanningMppNo(event.target.value); setPlanningError(""); }}
-              required
-              disabled={planningSubmitting}
-              placeholder="Enter MPP number"
-              style={{ width: "100%", marginBottom: 13, padding: 10, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 12 }}
-            />
-            <label htmlFor="planning-mrp-file" style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 800 }}>
-              Final MRP / form sheet <span style={{ color: "#b42318" }}>*</span>
-            </label>
-            <input
-              id="planning-mrp-file"
-              type="file"
-              accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-              required
-              disabled={planningSubmitting}
-              onChange={(event) => {
-                const file = event.target.files?.[0] || null;
-                setPlanningFile(file);
-                setPlanningError(file && !/\.(xlsx|xls)$/i.test(file.name) ? "Choose an Excel file in .xlsx or .xls format." : "");
-              }}
-              style={{ width: "100%", padding: 10, border: "1px solid var(--line)", borderRadius: 4, background: "#fff", fontSize: 12 }}
-            />
-            {planningFile && (
-              <div style={{ marginTop: 8, fontSize: 11, color: "#625b50" }}>
-                Selected: <b>{planningFile.name}</b> · {(planningFile.size / 1024 / 1024).toFixed(2)} MB
-              </div>
-            )}
-            {planningRecordId && planningError && (
-              <div style={{ marginTop: 10, fontSize: 11, color: "#92400e" }}>
-                The Planning record is already saved. Retry will update that same record and retry its attachment; it will not create a duplicate.
-              </div>
-            )}
-            {planningError && <div className="finish-modal-error" style={{ marginTop: 12 }}>{planningError}</div>}
-            <div className="finish-modal-btn-row">
-              <button
-                type="button"
-                className="finish-modal-btn cancel"
-                onClick={() => { setPlanningModalOpen(false); setPlanningError(""); setPlanningFile(null); }}
-                disabled={planningSubmitting}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="finish-modal-btn save"
-                disabled={planningSubmitting || !planningFile || !planningCustomerName.trim() || !planningMppNo.trim() || Boolean(planningError)}
-              >
-                {planningSubmitting ? "Saving to Zoho…" : "Upload & Complete"}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
       {bomViewerOpen && (
         <BomWorksheetModal
-          rows={bomWorksheetRows}
-          overrides={bomQuantityOverrides}
-          salesOrder={selectedSo?.salesorder_number || "Project"}
-          onQuantityChange={updateBomWorksheetQuantity}
-          onReset={() => setBomQuantityOverrides({})}
-          onDownload={handleExcelDownload}
+          sheets={planningWorkbookSheets}
+          customerName={planningCustomerName}
+          mppNo={planningMppNo}
+          submitting={planningSubmitting}
+          error={planningError}
+          recordId={planningRecordId}
+          onSheetsChange={setPlanningWorkbookSheets}
+          onCustomerNameChange={(value) => { setPlanningCustomerName(value); setPlanningError(""); }}
+          onMppNoChange={(value) => { setPlanningMppNo(value); setPlanningError(""); }}
+          onDownload={downloadEditedPlanningWorkbook}
+          onPlanningDone={submitPlanningDone}
           onClose={() => setBomViewerOpen(false)}
         />
+      )}
+
+      {optiOpen && (
+        <div className="finish-modal-backdrop" role="dialog" aria-modal="true" aria-label="Stone project OPTI">
+          <div className="finish-modal-content" style={{ width: "min(1080px, 94vw)", maxHeight: "90vh", overflow: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+              <div>
+                <h3 className="finish-modal-title" style={{ marginBottom: 4 }}>Project OPTI</h3>
+                <div style={{ fontSize: 11, opacity: 0.75 }}>Single retail project · uses the exact quantities currently added to Project Lines</div>
+              </div>
+              <button type="button" className="finish-modal-btn cancel" onClick={() => setOptiOpen(false)}>Close</button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, margin: "18px 0" }}>
+              <label style={{ display: "grid", gap: 5, fontSize: 11 }}>Cutting priority
+                <select value={optiSettings.priority} onChange={event => { setOptiSettings(current => ({ ...current, priority: event.target.value as "quantity" | "length" })); setOptiResult(null); }}>
+                  <option value="quantity">Quantity first</option>
+                  <option value="length">Length first</option>
+                </select>
+              </label>
+              <label style={{ display: "grid", gap: 5, fontSize: 11 }}>Saw / cutting kerf (mm)
+                <input type="number" min="0" max="30" step="0.1" value={optiSettings.kerf} onChange={event => { setOptiSettings(current => ({ ...current, kerf: Number(event.target.value) })); setOptiResult(null); }} />
+              </label>
+              <label style={{ display: "grid", gap: 5, fontSize: 11 }}>Sheet edge trim (mm)
+                <input type="number" min="0" max="30" step="0.1" value={optiSettings.trim} onChange={event => { setOptiSettings(current => ({ ...current, trim: Number(event.target.value) })); setOptiResult(null); }} />
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, paddingTop: 19 }}>
+                <input type="checkbox" checked={optiSettings.grainLocked} onChange={event => { setOptiSettings(current => ({ ...current, grainLocked: event.target.checked })); setOptiResult(null); }} />
+                Lock grain direction
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, paddingTop: 19 }}>
+                <input type="checkbox" checked={optiSettings.overproduction} onChange={event => { setOptiSettings(current => ({ ...current, overproduction: event.target.checked })); setOptiResult(null); }} />
+                Fill offcuts with extra stock
+              </label>
+            </div>
+
+            <h4 style={{ margin: "12px 0 8px" }}>Stock sizes by material</h4>
+            <div style={{ border: "1px solid var(--line)", borderRadius: 5, overflow: "hidden" }}>
+              {stoneOptiGroups(optiPieces).map((group, index) => {
+                const stock = optiSettings.groups[group.key] || { stockLength: 0, stockWidth: group.kind === "length" ? 1 : 0 };
+                return <div key={group.key} style={{ display: "grid", gridTemplateColumns: "minmax(250px, 1fr) 140px 140px", gap: 10, alignItems: "center", padding: "9px 10px", borderTop: index ? "1px solid var(--line)" : "none", fontSize: 11 }}>
+                  <div><b>{group.label}</b><div style={{ opacity: 0.65 }}>{group.pieces.reduce((sum, piece) => sum + piece.qty, 0)} required cut pieces</div></div>
+                  <label style={{ display: "grid", gap: 3 }}>Stock length (mm)
+                    <input type="number" min="1" step="1" value={stock.stockLength} onChange={event => { const value = Number(event.target.value); setOptiSettings(current => ({ ...current, groups: { ...current.groups, [group.key]: { ...stock, stockLength: value } } })); setOptiResult(null); }} />
+                  </label>
+                  {group.kind === "sheet" ? <label style={{ display: "grid", gap: 3 }}>Stock width (mm)
+                    <input type="number" min="1" step="1" value={stock.stockWidth} onChange={event => { const value = Number(event.target.value); setOptiSettings(current => ({ ...current, groups: { ...current.groups, [group.key]: { ...stock, stockWidth: value } } })); setOptiResult(null); }} />
+                  </label> : <div style={{ opacity: 0.65 }}>Linear profile</div>}
+                </div>;
+              })}
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 16 }}>
+              <button type="button" className="addbtn" disabled={optiBusy || !optiPieces.length} onClick={runOpti}>{optiBusy ? "Running OPTI…" : "Generate Cutting Plan"}</button>
+              {optiResult && <button type="button" className="addbtn" onClick={printOpti}>Print Cutting Chart</button>}
+              {optiResult && <button type="button" className="addbtn" onClick={downloadOptiExcel}>Download OPTI Excel</button>}
+            </div>
+            {optiError && <div className="finish-modal-error" style={{ marginTop: 12 }}>{optiError}</div>}
+
+            {optiResult && (
+              <div style={{ marginTop: 18 }}>
+                <h4 style={{ margin: "0 0 8px" }}>Project cutting summary</h4>
+                <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead><tr>{["Material", "Stock units", "Required", "Extra stock", "Waste before stock", "Remaining waste", "Review"].map(label => <th key={label} style={{ textAlign: "left", padding: 7, borderBottom: "1px solid var(--line)" }}>{label}</th>)}</tr></thead>
+                  <tbody>{optiResult.groups.map(group => <tr key={group.key} style={{ borderBottom: "1px solid var(--line)" }}>
+                    <td style={{ padding: 7 }}>{group.label}</td><td style={{ padding: 7 }}>{group.layouts.length}</td><td style={{ padding: 7 }}>{group.requiredPieces}</td><td style={{ padding: 7 }}>{group.extraPieces}</td><td style={{ padding: 7 }}>{group.wastePct.toFixed(2)}%</td><td style={{ padding: 7 }}>{group.remainingWastePct.toFixed(2)}%</td><td style={{ padding: 7, color: group.unplaced.length ? "#c0392b" : "inherit" }}>{group.unplaced.length ? `${group.unplaced.length} unplaced` : "Ready"}</td>
+                  </tr>)}</tbody>
+                </table></div>
+                <p style={{ fontSize: 10, opacity: 0.7 }}>Extra-stock pieces use existing offcuts only and do not change the project BOM quantities. Changing any option clears this result and requires OPTI to be generated again.</p>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {isFinishModalOpen && (

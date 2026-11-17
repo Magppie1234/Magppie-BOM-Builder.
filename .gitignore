@@ -20,3 +20,4 @@ scratch/*.json
 scratch/*.xlsx
 scratch/*.xls
 scratch/*.csv
+*.md
